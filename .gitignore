@@ -1,0 +1,11 @@
+# Secrets
+secrets/github_app_private_key.pem
+
+# Local environment
+.env
+
+# Backups
+backups/
+
+# Local state (volumes)
+data/
