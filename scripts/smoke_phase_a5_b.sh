@@ -31,6 +31,26 @@ if [ "$AUTO_START" = "1" ]; then
   docker compose up -d --build >/dev/null
 fi
 
+wait_for_healthz() {
+  local attempts=0
+  local max_attempts=40
+  local sleep_seconds=1
+
+  while [ "$attempts" -lt "$max_attempts" ]; do
+    if curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep "$sleep_seconds"
+  done
+
+  echo "toolhub did not become healthy in time" >&2
+  docker compose logs --no-color toolhub postgres >&2 || true
+  return 1
+}
+
+wait_for_healthz
+
 echo "[smoke] checking /healthz"
 health_resp="$(curl -fsS "${BASE_URL}/healthz")"
 python3 - <<'PY' "$health_resp"
