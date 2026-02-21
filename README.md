@@ -159,7 +159,19 @@ ToolHub reads configuration via environment variables (see `.env.example`).
 
 - `TOOL_ALLOWLIST`  
   Comma-separated tool names allowed in this deployment phase.
-  Example: `github.issues.create,github.issues.batch_create,github.pr.comment.create,github.pr.get,github.pr.files.list,runs.create`
+  Example: `github.issues.create,github.issues.batch_create,github.pr.comment.create,github.pr.get,github.pr.files.list,qa.test,qa.lint,runs.create`
+
+- `QA_WORKDIR`
+  Working directory used by `qa.test` and `qa.lint`.
+
+- `QA_TEST_CMD`
+  Server-configured command executed by `qa.test`.
+
+- `QA_LINT_CMD`
+  Server-configured command executed by `qa.lint`.
+
+- `QA_TIMEOUT_SECONDS`
+  Timeout for QA command execution.
 
 > ToolHub **must enforce** allowlists server-side. Do not rely on client discipline.
 
@@ -466,6 +478,49 @@ Response:
 }
 ```
 
+### 7) QA Test Command
+
+**POST** `/api/v1/runs/{runID}/qa/test`
+
+Request:
+
+```json
+{
+  "dry_run": true
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "tc_01J...",
+    "evidence_hash": "...",
+    "dry_run": true
+  },
+  "result": {
+    "status": "ok",
+    "report": {
+      "command": "go -C toolhub test ./...",
+      "work_dir": "/workspace",
+      "exit_code": 0,
+      "duration_ms": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  }
+}
+```
+
+### 8) QA Lint Command
+
+**POST** `/api/v1/runs/{runID}/qa/lint`
+
+Request/response shape is the same as `qa/test`.
+
 ---
 
 ## MCP Tools
@@ -479,6 +534,8 @@ Current tool names:
 - `github_pr_comment_create`
 - `github_pr_get`
 - `github_pr_files_list`
+- `qa_test`
+- `qa_lint`
 
 Detailed MCP schema: `docs/mcp-tools.md`.
 
@@ -505,6 +562,7 @@ The script validates:
 - `POST /api/v1/runs`
 - HTTP dry-run for issues, batch issues, and PR summary comment
 - HTTP PR metadata/file-list reads
+- HTTP QA tool dry-run checks
 - MCP tools list and dry-run/read calls for the same flows
 
 ---

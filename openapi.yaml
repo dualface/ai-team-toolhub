@@ -265,6 +265,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/qa/test:
+    post:
+      summary: Execute configured QA test command
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run:
+                  type: boolean
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/qa/lint:
+    post:
+      summary: Execute configured QA lint command
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run:
+                  type: boolean
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     Run:

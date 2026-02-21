@@ -76,6 +76,32 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.files[]`
     - `result.count`
 
+- `qa_test`
+  - Input:
+    - `run_id` (string, required)
+    - `dry_run` (boolean, optional)
+  - Output:
+    - `ok`
+    - `meta.run_id`
+    - `meta.tool_call_id`
+    - `meta.evidence_hash`
+    - `meta.dry_run`
+    - `result.status`
+    - `result.report`
+
+- `qa_lint`
+  - Input:
+    - `run_id` (string, required)
+    - `dry_run` (boolean, optional)
+  - Output:
+    - `ok`
+    - `meta.run_id`
+    - `meta.tool_call_id`
+    - `meta.evidence_hash`
+    - `meta.dry_run`
+    - `result.status`
+    - `result.report`
+
 ## Mapping to internal policy tool names
 
 - `github_issues_create` -> `github.issues.create`
@@ -83,5 +109,7 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
 - `github_pr_comment_create` -> `github.pr.comment.create`
 - `github_pr_get` -> `github.pr.get`
 - `github_pr_files_list` -> `github.pr.files.list`
+- `qa_test` -> `qa.test`
+- `qa_lint` -> `qa.lint`
 
 These internal names are what `TOOL_ALLOWLIST` enforces server-side.
