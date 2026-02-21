@@ -42,7 +42,7 @@ func NewClient(appID, installationID int64, keyPath string) (*Client, error) {
 		return nil, fmt.Errorf("no PEM block found in %s", keyPath)
 	}
 
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	key, err := parseRSAPrivateKey(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse private key: %w", err)
 	}
@@ -53,6 +53,22 @@ func NewClient(appID, installationID int64, keyPath string) (*Client, error) {
 		privateKey:     key,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 	}, nil
+}
+
+func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
+	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return key, nil
+	}
+
+	pkcs8Key, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, err
+	}
+	rsaKey, ok := pkcs8Key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not RSA")
+	}
+	return rsaKey, nil
 }
 
 // SECURITY: JWT signed with RS256 per GitHub App spec.
