@@ -78,11 +78,30 @@ func main() {
 		}
 		qaTimeout = time.Duration(secs) * time.Second
 	}
+	qaMaxOutputBytes := 256 * 1024
+	if raw := strings.TrimSpace(os.Getenv("QA_MAX_OUTPUT_BYTES")); raw != "" {
+		bytes, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || bytes <= 0 {
+			logger.Error("invalid QA_MAX_OUTPUT_BYTES", "value", raw)
+			os.Exit(1)
+		}
+		qaMaxOutputBytes = bytes
+	}
+	qaAllowedExecutables := []string{"go", "make", "pytest", "python", "python3", "npm", "npx", "yarn", "pnpm", "ruff", "eslint", "golangci-lint"}
+	if raw := strings.TrimSpace(os.Getenv("QA_ALLOWED_EXECUTABLES")); raw != "" {
+		qaAllowedExecutables = splitCSV(raw)
+		if len(qaAllowedExecutables) == 0 {
+			logger.Error("invalid QA_ALLOWED_EXECUTABLES", "value", raw)
+			os.Exit(1)
+		}
+	}
 	qaRunner := qa.NewRunner(qa.Config{
-		WorkDir: envOrDefault("QA_WORKDIR", "."),
-		TestCmd: envOrDefault("QA_TEST_CMD", "go -C toolhub test ./..."),
-		LintCmd: envOrDefault("QA_LINT_CMD", "go -C toolhub test ./..."),
-		Timeout: qaTimeout,
+		WorkDir:            envOrDefault("QA_WORKDIR", "."),
+		TestCmd:            envOrDefault("QA_TEST_CMD", "go -C toolhub test ./..."),
+		LintCmd:            envOrDefault("QA_LINT_CMD", "go -C toolhub test ./..."),
+		Timeout:            qaTimeout,
+		MaxOutputBytes:     qaMaxOutputBytes,
+		AllowedExecutables: qaAllowedExecutables,
 	})
 
 	httpAddr := envOrDefault("TOOLHUB_HTTP_LISTEN", "0.0.0.0:8080")
@@ -136,4 +155,15 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitCSV(raw string) []string {
+	out := make([]string, 0)
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
