@@ -16,6 +16,12 @@ import (
 	mcpsvr "github.com/toolhub/toolhub/internal/mcp"
 )
 
+var (
+	version   = ""
+	gitCommit = ""
+	buildTime = ""
+)
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -69,7 +75,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, logger, batchMode)
+	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, logger, batchMode, httpsvr.BuildInfo{
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildTime: buildTime,
+	})
 	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, logger, batchMode)
 
 	errCh := make(chan error, 2)

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -58,6 +60,19 @@ type jsonRPCResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+type toolMeta struct {
+	RunID        string `json:"run_id"`
+	ToolCallID   string `json:"tool_call_id"`
+	EvidenceHash string `json:"evidence_hash"`
+	DryRun       bool   `json:"dry_run"`
+}
+
+type toolEnvelope struct {
+	OK     bool     `json:"ok"`
+	Meta   toolMeta `json:"meta"`
+	Result any      `json:"result"`
 }
 
 func (s *Server) ListenAndServe() error {
@@ -174,10 +189,11 @@ func (s *Server) toolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"run_id": map[string]string{"type": "string"},
-					"title":  map[string]string{"type": "string"},
-					"body":   map[string]string{"type": "string"},
-					"labels": map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"run_id":  map[string]string{"type": "string"},
+					"title":   map[string]string{"type": "string"},
+					"body":    map[string]string{"type": "string"},
+					"labels":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"dry_run": map[string]string{"type": "boolean"},
 				},
 				"required": []string{"run_id", "title", "body"},
 			},
@@ -188,7 +204,8 @@ func (s *Server) toolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"run_id": map[string]string{"type": "string"},
+					"run_id":  map[string]string{"type": "string"},
+					"dry_run": map[string]string{"type": "boolean"},
 					"issues": map[string]any{
 						"type": "array",
 						"items": map[string]any{
@@ -203,6 +220,20 @@ func (s *Server) toolDefinitions() []map[string]any {
 					},
 				},
 				"required": []string{"run_id", "issues"},
+			},
+		},
+		{
+			"name":        "github_pr_comment_create",
+			"description": "Create a PR summary comment within a run",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":    map[string]string{"type": "string"},
+					"pr_number": map[string]string{"type": "integer"},
+					"body":      map[string]string{"type": "string"},
+					"dry_run":   map[string]string{"type": "boolean"},
+				},
+				"required": []string{"run_id", "pr_number", "body"},
 			},
 		},
 	}
@@ -227,6 +258,8 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolIssuesCreate(ctx, params.Arguments, base)
 	case "github_issues_batch_create":
 		return s.toolIssuesBatchCreate(ctx, params.Arguments, base)
+	case "github_pr_comment_create":
+		return s.toolPRCommentCreate(ctx, params.Arguments, base)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -265,6 +298,7 @@ type issuesCreateArgs struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
 	Labels []string `json:"labels,omitempty"`
+	DryRun bool     `json:"dry_run,omitempty"`
 }
 
 type batchResultJSON struct {
@@ -275,6 +309,7 @@ type batchResultJSON struct {
 }
 
 type batchResponseJSON struct {
+	Status       string            `json:"status"`
 	Mode         core.BatchMode    `json:"mode"`
 	Total        int               `json:"total"`
 	Processed    int               `json:"processed"`
@@ -311,39 +346,59 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 	}
 
 	var replayIssue gh.Issue
-	replayed, err := s.audit.ReplayResponse(ctx, args.RunID, toolName, idemKey, &replayIssue)
+	tc, replayed, err := s.audit.ReplayResponse(ctx, args.RunID, toolName, idemKey, &replayIssue)
 	if err != nil {
-		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		mapped := core.MapError(err, 500)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
 		return base
 	}
 	if replayed {
-		base.Result = &replayIssue
+		base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: &replayIssue}
 		return base
 	}
 
 	owner, repo := splitRepo(run.Repo)
-	issue, ghErr := s.gh.CreateIssue(ctx, owner, repo, gh.CreateIssueInput{
-		Title: args.Title, Body: args.Body, Labels: args.Labels,
-	})
+	var issue *gh.Issue
+	var ghErr error
+	if !args.DryRun {
+		issue, ghErr = s.gh.CreateIssue(ctx, owner, repo, gh.CreateIssueInput{
+			Title: args.Title, Body: args.Body, Labels: args.Labels,
+		})
+	}
 
-	if _, auditErr := s.audit.Record(ctx, core.RecordInput{
+	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: toolName, IdemKey: &idemKey, Request: args, Response: issue, Err: ghErr,
-	}); auditErr != nil {
+	})
+	if auditErr != nil {
 		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
 		return base
 	}
 
+	s.logger.Info("tool call completed",
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", toolName,
+		"repo", run.Repo,
+		"dry_run", args.DryRun,
+	)
+
 	if ghErr != nil {
-		base.Error = &rpcError{Code: -32603, Message: ghErr.Error()}
+		mapped := core.MapError(ghErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
 		return base
 	}
 
-	base.Result = issue
+	result := any(issue)
+	if args.DryRun {
+		result = map[string]any{"would_create": map[string]any{"repo": run.Repo, "title": args.Title, "body": args.Body, "labels": args.Labels}}
+	}
+	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
 	return base
 }
 
 type issuesBatchCreateArgs struct {
 	RunID  string `json:"run_id"`
+	DryRun bool   `json:"dry_run,omitempty"`
 	Issues []struct {
 		Title  string   `json:"title"`
 		Body   string   `json:"body"`
@@ -394,34 +449,56 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 		}
 
 		var replayIssue gh.Issue
-		replayed, err := s.audit.ReplayResponse(ctx, args.RunID, "github.issues.batch_create", idemKey, &replayIssue)
+		tc, replayed, err := s.audit.ReplayResponse(ctx, args.RunID, "github.issues.batch_create", idemKey, &replayIssue)
 		if err != nil {
 			base.Error = &rpcError{Code: -32603, Message: err.Error()}
 			return base
 		}
 		if replayed {
+			s.logger.Info("tool call replayed",
+				"run_id", args.RunID,
+				"tool_call_id", tc.ToolCallID,
+				"tool_name", "github.issues.batch_create",
+				"repo", run.Repo,
+				"index", i,
+			)
 			replayedCount++
 			out[i] = batchResultJSON{Index: i, Issue: &replayIssue, Replayed: true}
 			continue
 		}
 
-		issue, ghErr := s.gh.CreateIssue(ctx, owner, repo, gh.CreateIssueInput{Title: in.Title, Body: in.Body, Labels: in.Labels})
+		var issue *gh.Issue
+		var ghErr error
+		if !args.DryRun {
+			issue, ghErr = s.gh.CreateIssue(ctx, owner, repo, gh.CreateIssueInput{Title: in.Title, Body: in.Body, Labels: in.Labels})
+		}
 
-		if _, auditErr := s.audit.Record(ctx, core.RecordInput{
+		tc, auditErr := s.audit.Record(ctx, core.RecordInput{
 			RunID: args.RunID, ToolName: "github.issues.batch_create", IdemKey: &idemKey,
 			Request: in, Response: issue, Err: ghErr,
-		}); auditErr != nil {
+		})
+		if auditErr != nil {
 			base.Error = &rpcError{Code: -32603, Message: fmt.Sprintf("audit record failed at index %d: %s", i, auditErr.Error())}
 			return base
 		}
+
+		s.logger.Info("tool call completed",
+			"run_id", args.RunID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", "github.issues.batch_create",
+			"repo", run.Repo,
+			"index", i,
+			"dry_run", args.DryRun,
+		)
 
 		if ghErr != nil {
 			errCount++
 			out[i] = batchResultJSON{Index: i, Issue: issue, Error: ghErr.Error()}
 			if s.mode == core.BatchModeStrict {
 				stoppedAt := i
-				base.Error = &rpcError{Code: -32603, Message: fmt.Sprintf("batch strict mode stopped at index %d: %s", i, ghErr.Error())}
-				base.Result = batchResponseJSON{
+				status := core.DeriveBatchStatus(processed, replayedCount, errCount)
+				base.Result = toolEnvelope{OK: false, Meta: toolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
+					Status:       status,
 					Mode:         s.mode,
 					Total:        len(args.Issues),
 					Processed:    processed,
@@ -431,7 +508,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 					StoppedAt:    &stoppedAt,
 					FailedReason: ghErr.Error(),
 					Results:      out[:processed],
-				}
+				}}
 				return base
 			}
 		} else {
@@ -439,7 +516,10 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 		}
 	}
 
-	base.Result = batchResponseJSON{
+	status := core.DeriveBatchStatus(len(args.Issues), replayedCount, errCount)
+
+	base.Result = toolEnvelope{OK: errCount == 0, Meta: toolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
+		Status:       status,
 		Mode:         s.mode,
 		Total:        len(args.Issues),
 		Processed:    len(args.Issues),
@@ -447,7 +527,98 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 		Replayed:     replayedCount,
 		CreatedFresh: len(args.Issues) - replayedCount,
 		Results:      out,
+	}}
+	return base
+}
+
+type prCommentArgs struct {
+	RunID    string `json:"run_id"`
+	PRNumber int    `json:"pr_number"`
+	Body     string `json:"body"`
+	DryRun   bool   `json:"dry_run,omitempty"`
+}
+
+func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	var args prCommentArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
 	}
+	if args.PRNumber <= 0 {
+		base.Error = &rpcError{Code: -32602, Message: "pr_number must be positive"}
+		return base
+	}
+	if strings.TrimSpace(args.Body) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "body is required"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+
+	toolName := "github.pr.comment.create"
+	labels := []string{"pr:" + strconv.Itoa(args.PRNumber)}
+	idemKey, err := core.MakeIssueIdempotencyKey(args.RunID, toolName, fmt.Sprintf("pr-%d", args.PRNumber), args.Body, labels, nil)
+	if err != nil {
+		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		return base
+	}
+
+	var replay any
+	tcReplay, replayed, err := s.audit.ReplayResponse(ctx, args.RunID, toolName, idemKey, &replay)
+	if err != nil {
+		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		return base
+	}
+	if replayed {
+		base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false}, Result: replay}
+		return base
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	var comment *gh.Comment
+	var ghErr error
+	if !args.DryRun {
+		comment, ghErr = s.gh.CreatePRComment(ctx, owner, repo, args.PRNumber, args.Body)
+	}
+
+	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID: args.RunID, ToolName: toolName, IdemKey: &idemKey,
+		Request: args,
+		Response: map[string]any{
+			"comment": comment,
+			"preview": map[string]any{"repo": run.Repo, "pr_number": args.PRNumber, "body": args.Body},
+		},
+		Err: ghErr,
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", toolName,
+		"repo", run.Repo,
+		"dry_run", args.DryRun,
+		"pr_number", args.PRNumber,
+	)
+
+	if ghErr != nil {
+		mapped := core.MapError(ghErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
+		return base
+	}
+
+	result := any(comment)
+	if args.DryRun {
+		result = map[string]any{"would_comment": map[string]any{"repo": run.Repo, "pr_number": args.PRNumber, "body": args.Body}}
+	}
+	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
 	return base
 }
 
@@ -465,4 +636,12 @@ func mcpContent(text string) map[string]any {
 			{"type": "text", "text": text},
 		},
 	}
+}
+
+func asAPIError(err error) *gh.APIError {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	return nil
 }

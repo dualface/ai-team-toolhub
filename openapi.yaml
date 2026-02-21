@@ -1,0 +1,255 @@
+openapi: 3.0.3
+info:
+  title: ToolHub HTTP API
+  version: 0.2.0
+  description: HTTP contract for ToolHub Phase A.5 + Phase B start.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+  /version:
+    get:
+      summary: Build metadata
+      responses:
+        '200':
+          description: Version info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  git_commit:
+                    type: string
+                  build_time:
+                    type: string
+  /api/v1/runs:
+    post:
+      summary: Create run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo, purpose]
+              properties:
+                repo:
+                  type: string
+                purpose:
+                  type: string
+      responses:
+        '201':
+          description: Run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '403':
+          description: Repo not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}:
+    get:
+      summary: Get run
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Run details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/issues:
+    post:
+      summary: Create issue (or dry run)
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, body]
+              properties:
+                title:
+                  type: string
+                body:
+                  type: string
+                labels:
+                  type: array
+                  items:
+                    type: string
+                dry_run:
+                  type: boolean
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/issues/batch:
+    post:
+      summary: Batch create issues (or dry run)
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issues]
+              properties:
+                dry_run:
+                  type: boolean
+                issues:
+                  type: array
+                  items:
+                    type: object
+                    required: [title, body]
+                    properties:
+                      title:
+                        type: string
+                      body:
+                        type: string
+                      labels:
+                        type: array
+                        items:
+                          type: string
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/prs/{prNumber}/comment:
+    post:
+      summary: Create PR summary comment (or dry run)
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: prNumber
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body:
+                  type: string
+                dry_run:
+                  type: boolean
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    Run:
+      type: object
+      properties:
+        run_id:
+          type: string
+        repo:
+          type: string
+        purpose:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ToolMeta:
+      type: object
+      properties:
+        run_id:
+          type: string
+        tool_call_id:
+          type: string
+        evidence_hash:
+          type: string
+        dry_run:
+          type: boolean
+    ToolEnvelope:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        meta:
+          $ref: '#/components/schemas/ToolMeta'
+        result:
+          type: object
+          additionalProperties: true
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string

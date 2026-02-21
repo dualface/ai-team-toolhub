@@ -24,6 +24,7 @@ ToolHub is a production-oriented tool gateway for AI orchestration. It exposes a
 - [GitHub App Setup](#github-app-setup)
 - [API Overview (HTTP)](#api-overview-http)
 - [MCP Tools](#mcp-tools)
+- [OpenAPI](#openapi)
 - [Artifact & Audit Model](#artifact--audit-model)
 - [Backups](#backups)
 - [Operational Notes](#operational-notes)
@@ -104,10 +105,11 @@ docker compose up -d --build
 docker compose ps
 ```
 
-5) Verify health (assuming you implemented `/healthz`):
+5) Verify health and version metadata:
 
 ```bash
 curl -s http://localhost:${TOOLHUB_HTTP_PORT}/healthz
+curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 ```
 
 ---
@@ -156,7 +158,7 @@ ToolHub reads configuration via environment variables (see `.env.example`).
 
 - `TOOL_ALLOWLIST`  
   Comma-separated tool names allowed in this deployment phase.
-  Example: `github.issues.create,github.issues.batch_create,runs.create`
+  Example: `github.issues.create,github.issues.batch_create,github.pr.comment.create,runs.create`
 
 > ToolHub **must enforce** allowlists server-side. Do not rely on client discipline.
 
@@ -257,9 +259,26 @@ Base URL:
 http://localhost:${TOOLHUB_HTTP_PORT}
 ```
 
+### 0) Service Version
+
+**GET** `/version`
+
+Response:
+
+```json
+{
+  "version": "",
+  "git_commit": "",
+  "build_time": ""
+}
+```
+
+Notes:
+- Values are build metadata and may be empty when not injected at build time.
+
 ### 1) Create Run
 
-**POST** `/v1/runs`
+**POST** `/api/v1/runs`
 
 Request:
 
@@ -281,19 +300,16 @@ Response:
 
 ### 2) Create Single Issue
 
-**POST** `/v1/github/issues:create`
+**POST** `/api/v1/runs/{runID}/issues`
 
 Request:
 
 ```json
 {
-  "run_id": "run_01J...",
-  "repo": "yourname/zos-server-go",
   "title": "T-001: Add endpoint X",
   "body": "## Goal\n...\n\n## DoD\n- ...\n\n## Test Plan\n- ...\n\n## Rollback\n- ...",
   "labels": ["agent", "backend"],
-  "assignees": [],
-  "milestone": null
+  "dry_run": false
 }
 ```
 
@@ -302,35 +318,33 @@ Response (example envelope):
 ```json
 {
   "ok": true,
-  "run_id": "run_01J...",
-  "tool_call_id": "tc_01J...",
-  "result": {
-    "issue_number": 123,
-    "url": "https://github.com/yourname/zos-server-go/issues/123"
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "tc_01J...",
+    "evidence_hash": "...",
+    "dry_run": false
   },
-  "artifacts": [
-    { "uri": "file:///var/lib/toolhub/artifacts/run_.../tc_request.json", "sha256": "..." },
-    { "uri": "file:///var/lib/toolhub/artifacts/run_.../tc_response.json", "sha256": "..." }
-  ],
-  "evidence_hash": "sha256:..."
+  "result": {
+    "number": 123,
+    "html_url": "https://github.com/yourname/zos-server-go/issues/123"
+  }
 }
 ```
 
 Notes:
 - ToolHub applies request validation (title/body/labels limits).
 - ToolHub enforces idempotent behavior for repeated equivalent requests within the same `run_id`.
-- If GitHub succeeds but audit persistence fails, the API returns an error (audit-strong-fail policy).
+- `dry_run=true` performs validation + audit but does not call GitHub write API.
 
 ### 3) Batch Create Issues
 
-**POST** `/v1/github/issues:batchCreate`
+**POST** `/api/v1/runs/{runID}/issues/batch`
 
 Request:
 
 ```json
 {
-  "run_id": "run_01J...",
-  "repo": "yourname/zos-server-go",
+  "dry_run": false,
   "issues": [
     { "title": "T-001: ...", "body": "...", "labels": ["agent"] },
     { "title": "T-002: ...", "body": "...", "labels": ["agent"] }
@@ -343,18 +357,25 @@ Response:
 ```json
 {
   "ok": true,
-  "run_id": "run_01J...",
-  "tool_call_id": "tc_01J...",
-  "result": {
-    "created": [
-      { "issue_number": 123, "url": "..." },
-      { "issue_number": 124, "url": "..." }
-    ]
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "",
+    "evidence_hash": "",
+    "dry_run": false
   },
-  "artifacts": [
-    { "uri": "file:///.../issues_created.json", "sha256": "..." }
-  ],
-  "evidence_hash": "sha256:..."
+  "result": {
+    "status": "partial",
+    "mode": "partial",
+    "total": 2,
+    "processed": 2,
+    "errors": 1,
+    "replayed": 0,
+    "created_fresh": 2,
+    "results": [
+      { "index": 0, "issue": { "number": 123, "html_url": "..." } },
+      { "index": 1, "error": "..." }
+    ]
+  }
 }
 ```
 
@@ -363,7 +384,38 @@ Notes:
 - Response schema is standardized with: `mode`, `total`, `processed`, `errors`, `replayed`, `created_fresh`, `results`.
 - Result is per-item and can contain mixed outcomes (`issue` or `error`).
 - Replayed idempotent items are returned without creating duplicate issues.
-- In `strict` mode, processing stops at the first GitHub error and returns early with `stopped_at` and `failed_reason`.
+- In `strict` mode, processing stops at first GitHub error and returns `stopped_at`/`failed_reason`.
+
+### 4) PR Summary Comment
+
+**POST** `/api/v1/runs/{runID}/prs/{prNumber}/comment`
+
+Request:
+
+```json
+{
+  "body": "Summary comment for this PR",
+  "dry_run": false
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "tc_01J...",
+    "evidence_hash": "...",
+    "dry_run": false
+  },
+  "result": {
+    "id": 123456,
+    "html_url": "https://github.com/owner/repo/pull/12#issuecomment-..."
+  }
+}
+```
 
 ---
 
@@ -371,12 +423,17 @@ Notes:
 
 ToolHub also exposes tools via MCP, typically mapping 1:1 to HTTP actions.
 
-Expected tool names (Phase A):
-- `runs.create`
-- `github.issues.create`
-- `github.issues.batch_create`
+Current tool names:
+- `runs_create`
+- `github_issues_create`
+- `github_issues_batch_create`
+- `github_pr_comment_create`
 
-Input schema should mirror HTTP request bodies.
+Detailed MCP schema: `docs/mcp-tools.md`.
+
+## OpenAPI
+
+- HTTP API contract file: `openapi.yaml`
 
 > How to connect depends on your agent framework. If ToolHub runs MCP on `${TOOLHUB_MCP_PORT}`, your orchestrator should connect to `localhost:${TOOLHUB_MCP_PORT}`.
 

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,11 +24,18 @@ type Server struct {
 	srv    *http.Server
 	logger *slog.Logger
 	mode   core.BatchMode
+	build  BuildInfo
+}
+
+type BuildInfo struct {
+	Version   string
+	GitCommit string
+	BuildTime string
 }
 
 const maxRequestBodyBytes = 1 << 20
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, logger *slog.Logger, mode core.BatchMode) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
 	s := &Server{
 		runs:   runs,
 		audit:  audit,
@@ -35,14 +43,17 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 		gh:     ghClient,
 		logger: logger,
 		mode:   mode,
+		build:  build,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("POST /api/v1/runs", s.handleCreateRun)
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues", s.handleCreateIssue)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues/batch", s.handleBatchCreateIssues)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/prs/{prNumber}/comment", s.handleCreatePRComment)
 
 	s.srv = &http.Server{
 		Addr:         addr,
@@ -69,6 +80,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version":    s.build.Version,
+		"git_commit": s.build.GitCommit,
+		"build_time": s.build.BuildTime,
+	})
 }
 
 type createRunBody struct {
@@ -118,6 +137,32 @@ type createIssueBody struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
 	Labels []string `json:"labels,omitempty"`
+	DryRun bool     `json:"dry_run,omitempty"`
+}
+
+type toolResponseMeta struct {
+	RunID        string `json:"run_id"`
+	ToolCallID   string `json:"tool_call_id"`
+	EvidenceHash string `json:"evidence_hash"`
+	DryRun       bool   `json:"dry_run"`
+}
+
+type toolResponse struct {
+	OK     bool             `json:"ok"`
+	Meta   toolResponseMeta `json:"meta"`
+	Result any              `json:"result"`
+}
+
+type dryRunIssuePreview struct {
+	Repo   string   `json:"repo"`
+	Title  string   `json:"title"`
+	Body   string   `json:"body"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+type prCommentBody struct {
+	Body   string `json:"body"`
+	DryRun bool   `json:"dry_run,omitempty"`
 }
 
 func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -151,46 +196,103 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var replayIssue gh.Issue
-	replayed, err := s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replayIssue)
+	tc, replayed, err := s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replayIssue)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeMappedErr(w, err, http.StatusInternalServerError)
 		return
 	}
 	if replayed {
-		writeJSON(w, http.StatusOK, &replayIssue)
+		writeJSON(w, http.StatusOK, toolResponse{
+			OK: true,
+			Meta: toolResponseMeta{
+				RunID:        runID,
+				ToolCallID:   tc.ToolCallID,
+				EvidenceHash: tc.EvidenceHash,
+				DryRun:       false,
+			},
+			Result: &replayIssue,
+		})
 		return
 	}
 
 	owner, repo := splitRepo(run.Repo)
 
-	issue, ghErr := s.gh.CreateIssue(r.Context(), owner, repo, gh.CreateIssueInput{
-		Title:  body.Title,
-		Body:   body.Body,
-		Labels: body.Labels,
-	})
+	var issue *gh.Issue
+	var ghErr error
+	if body.DryRun {
+		issue = nil
+	} else {
+		issue, ghErr = s.gh.CreateIssue(r.Context(), owner, repo, gh.CreateIssueInput{
+			Title:  body.Title,
+			Body:   body.Body,
+			Labels: body.Labels,
+		})
+	}
 
-	if _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: toolName,
 		IdemKey:  &idemKey,
 		Request:  body,
-		Response: issue,
-		Err:      ghErr,
-	}); auditErr != nil {
+		Response: map[string]any{
+			"issue": issue,
+			"preview": dryRunIssuePreview{
+				Repo:   run.Repo,
+				Title:  body.Title,
+				Body:   body.Body,
+				Labels: body.Labels,
+			},
+		},
+		Err: ghErr,
+	})
+	if auditErr != nil {
 		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
 		return
 	}
 
+	toolLogger := s.logger.With(
+		"run_id", runID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", toolName,
+		"repo", run.Repo,
+		"dry_run", body.DryRun,
+	)
+
 	if ghErr != nil {
-		writeErr(w, http.StatusBadGateway, ghErr.Error())
+		toolLogger.Error("tool call failed", "err", ghErr)
+		writeMappedErr(w, ghErr, http.StatusBadGateway)
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, issue)
+	toolLogger.Info("tool call completed")
+
+	result := any(issue)
+	if body.DryRun {
+		result = map[string]any{
+			"would_create": dryRunIssuePreview{
+				Repo:   run.Repo,
+				Title:  body.Title,
+				Body:   body.Body,
+				Labels: body.Labels,
+			},
+		}
+	}
+
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK: ghErr == nil,
+		Meta: toolResponseMeta{
+			RunID:        runID,
+			ToolCallID:   tc.ToolCallID,
+			EvidenceHash: tc.EvidenceHash,
+			DryRun:       body.DryRun,
+		},
+		Result: result,
+	})
 }
 
 type batchCreateBody struct {
 	Issues []createIssueBody `json:"issues"`
+	DryRun bool              `json:"dry_run,omitempty"`
 }
 
 type batchResultJSON struct {
@@ -201,6 +303,7 @@ type batchResultJSON struct {
 }
 
 type batchResponseJSON struct {
+	Status       string            `json:"status"`
 	Mode         core.BatchMode    `json:"mode"`
 	Total        int               `json:"total"`
 	Processed    int               `json:"processed"`
@@ -263,33 +366,61 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 		}
 
 		var replayIssue gh.Issue
-		replayed, err := s.audit.ReplayResponse(r.Context(), runID, "github.issues.batch_create", idemKey, &replayIssue)
+		tc, replayed, err := s.audit.ReplayResponse(r.Context(), runID, "github.issues.batch_create", idemKey, &replayIssue)
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+			writeMappedErr(w, err, http.StatusInternalServerError)
 			return
 		}
 
 		if replayed {
 			out[i] = batchResultJSON{Index: i, Issue: &replayIssue, Replayed: true}
+			s.logger.Info("tool call replayed",
+				"run_id", runID,
+				"tool_call_id", tc.ToolCallID,
+				"tool_name", "github.issues.batch_create",
+				"repo", run.Repo,
+			)
 			replayedCount++
 			continue
 		}
 
-		issue, ghErr := s.gh.CreateIssue(r.Context(), owner, repo, gh.CreateIssueInput{
-			Title: in.Title, Body: in.Body, Labels: in.Labels,
-		})
+		var issue *gh.Issue
+		var ghErr error
+		if !body.DryRun {
+			issue, ghErr = s.gh.CreateIssue(r.Context(), owner, repo, gh.CreateIssueInput{
+				Title: in.Title, Body: in.Body, Labels: in.Labels,
+			})
+		}
 
-		if _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 			RunID:    runID,
 			ToolName: "github.issues.batch_create",
 			IdemKey:  &idemKey,
 			Request:  in,
-			Response: issue,
-			Err:      ghErr,
-		}); auditErr != nil {
+			Response: map[string]any{
+				"issue": issue,
+				"preview": dryRunIssuePreview{
+					Repo:   run.Repo,
+					Title:  in.Title,
+					Body:   in.Body,
+					Labels: in.Labels,
+				},
+			},
+			Err: ghErr,
+		})
+		if auditErr != nil {
 			writeErr(w, http.StatusInternalServerError, fmt.Sprintf("audit record failed at index %d: %s", i, auditErr.Error()))
 			return
 		}
+
+		s.logger.Info("tool call completed",
+			"run_id", runID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", "github.issues.batch_create",
+			"repo", run.Repo,
+			"index", i,
+			"dry_run", body.DryRun,
+		)
 
 		out[i] = batchResultJSON{Index: i, Issue: issue}
 		if ghErr != nil {
@@ -297,7 +428,9 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 			errCount++
 			if s.mode == core.BatchModeStrict {
 				stoppedAt := i
-				writeJSON(w, http.StatusBadGateway, batchResponseJSON{
+				status := core.DeriveBatchStatus(processed, replayedCount, errCount)
+				writeJSON(w, http.StatusOK, batchResponseJSON{
+					Status:       status,
 					Mode:         s.mode,
 					Total:        len(body.Issues),
 					Processed:    processed,
@@ -313,14 +446,126 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	writeJSON(w, http.StatusOK, batchResponseJSON{
-		Mode:         s.mode,
-		Total:        len(body.Issues),
-		Processed:    len(body.Issues),
-		Errors:       errCount,
-		Replayed:     replayedCount,
-		CreatedFresh: len(body.Issues) - replayedCount,
-		Results:      out,
+	status := core.DeriveBatchStatus(len(body.Issues), replayedCount, errCount)
+
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK: errCount == 0,
+		Meta: toolResponseMeta{
+			RunID:        runID,
+			ToolCallID:   "",
+			EvidenceHash: "",
+			DryRun:       body.DryRun,
+		},
+		Result: batchResponseJSON{
+			Status:       status,
+			Mode:         s.mode,
+			Total:        len(body.Issues),
+			Processed:    len(body.Issues),
+			Errors:       errCount,
+			Replayed:     replayedCount,
+			CreatedFresh: len(body.Issues) - replayedCount,
+			Results:      out,
+		},
+	})
+}
+
+func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	prNumberRaw := r.PathValue("prNumber")
+	prNumber := 0
+	if _, err := fmt.Sscanf(prNumberRaw, "%d", &prNumber); err != nil || prNumber <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid prNumber")
+		return
+	}
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeMappedErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	var body prCommentBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeMappedErr(w, fmt.Errorf("invalid json: %w", err), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Body) == "" {
+		writeErr(w, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	toolName := "github.pr.comment.create"
+	keyLabels := []string{fmt.Sprintf("pr:%d", prNumber)}
+	idemKey, err := core.MakeIssueIdempotencyKey(runID, toolName, fmt.Sprintf("pr-%d", prNumber), body.Body, keyLabels, nil)
+	if err != nil {
+		writeMappedErr(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	var replay map[string]any
+	tcReplay, replayed, err := s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replay)
+	if err != nil {
+		writeMappedErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	if replayed {
+		writeJSON(w, http.StatusOK, toolResponse{
+			OK:     true,
+			Meta:   toolResponseMeta{RunID: runID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false},
+			Result: replay,
+		})
+		return
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	var comment *gh.Comment
+	var ghErr error
+	if !body.DryRun {
+		comment, ghErr = s.gh.CreatePRComment(r.Context(), owner, repo, prNumber, body.Body)
+	}
+
+	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: toolName,
+		IdemKey:  &idemKey,
+		Request:  body,
+		Response: map[string]any{
+			"comment": comment,
+			"preview": map[string]any{"repo": run.Repo, "pr_number": prNumber, "body": body.Body},
+		},
+		Err: ghErr,
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", runID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", toolName,
+		"repo", run.Repo,
+		"dry_run", body.DryRun,
+		"pr_number", prNumber,
+	)
+
+	if ghErr != nil {
+		writeMappedErr(w, ghErr, http.StatusBadGateway)
+		return
+	}
+
+	result := any(comment)
+	if body.DryRun {
+		result = map[string]any{"would_comment": map[string]any{"repo": run.Repo, "pr_number": prNumber, "body": body.Body}}
+	}
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK:     true,
+		Meta:   toolResponseMeta{RunID: runID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: body.DryRun},
+		Result: result,
 	})
 }
 
@@ -339,7 +584,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	code := "internal_error"
+	switch {
+	case status == http.StatusBadRequest:
+		code = "invalid_request_schema"
+	case status == http.StatusForbidden:
+		code = "forbidden"
+	case status == http.StatusNotFound:
+		code = "not_found"
+	case status >= 500 && status < 600:
+		code = "upstream_error"
+	}
+	writeJSON(w, status, map[string]string{"code": code, "message": msg})
+}
+
+func writeMappedErr(w http.ResponseWriter, err error, fallbackStatus int) {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		mapped := core.MapError(apiErr, fallbackStatus)
+		writeErr(w, mapped.HTTPStatus, mapped.Message)
+		return
+	}
+	mapped := core.MapError(err, fallbackStatus)
+	writeErr(w, mapped.HTTPStatus, mapped.Message)
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {

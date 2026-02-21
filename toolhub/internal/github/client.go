@@ -206,6 +206,22 @@ type Issue struct {
 	HTMLURL string `json:"html_url"`
 }
 
+type Comment struct {
+	ID      int64  `json:"id"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
+}
+
+type APIError struct {
+	Operation  string
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s HTTP %d: %s", e.Operation, e.StatusCode, e.Body)
+}
+
 func (c *Client) CreateIssue(ctx context.Context, owner, repo string, in CreateIssueInput) (*Issue, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues", owner, repo)
 	const maxAttempts = 4
@@ -238,7 +254,7 @@ func (c *Client) CreateIssue(ctx context.Context, owner, repo string, in CreateI
 		if readErr != nil {
 			lastErr = fmt.Errorf("create issue HTTP %d and read body failed: %w", resp.StatusCode, readErr)
 		} else {
-			lastErr = fmt.Errorf("create issue HTTP %d: %s", resp.StatusCode, body)
+			lastErr = &APIError{Operation: "create issue", StatusCode: resp.StatusCode, Body: string(body)}
 		}
 
 		retryAfter := retryAfterDuration(resp)
@@ -256,6 +272,31 @@ func (c *Client) CreateIssue(ctx context.Context, owner, repo string, in CreateI
 		lastErr = fmt.Errorf("create issue failed")
 	}
 	return nil, lastErr
+}
+
+func (c *Client) CreatePRComment(ctx context.Context, owner, repo string, prNumber int, bodyText string) (*Comment, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+	payload := map[string]string{"body": bodyText}
+
+	resp, err := c.doAPI(ctx, http.MethodPost, url, payload)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		b, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("create pr comment HTTP %d and read body failed: %w", resp.StatusCode, readErr)
+		}
+		return nil, &APIError{Operation: "create pr comment", StatusCode: resp.StatusCode, Body: string(b)}
+	}
+
+	var comment Comment
+	if err := json.NewDecoder(resp.Body).Decode(&comment); err != nil {
+		return nil, fmt.Errorf("decode pr comment: %w", err)
+	}
+	return &comment, nil
 }
 
 func (c *Client) BatchCreateIssues(ctx context.Context, owner, repo string, issues []CreateIssueInput) ([]BatchResult, error) {

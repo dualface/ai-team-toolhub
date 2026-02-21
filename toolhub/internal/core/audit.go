@@ -94,24 +94,24 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 	return tc, nil
 }
 
-func (a *AuditService) ReplayResponse(ctx context.Context, runID, toolName, idempotencyKey string, out any) (bool, error) {
+func (a *AuditService) ReplayResponse(ctx context.Context, runID, toolName, idempotencyKey string, out any) (*db.ToolCall, bool, error) {
 	tc, err := a.db.GetSuccessfulToolCallByIdempotency(ctx, runID, toolName, idempotencyKey)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if tc == nil {
-		return false, nil
+		return nil, false, nil
 	}
 	if tc.ResponseArtifactID == nil {
-		return false, fmt.Errorf("response artifact missing for replay")
+		return nil, false, fmt.Errorf("response artifact missing for replay")
 	}
 
 	b, err := a.store.Read(ctx, *tc.ResponseArtifactID)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if err := json.Unmarshal(b, out); err != nil {
-		return false, fmt.Errorf("decode replay response: %w", err)
+		return nil, false, fmt.Errorf("decode replay response: %w", err)
 	}
-	return true, nil
+	return tc, true, nil
 }
