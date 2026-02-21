@@ -5,9 +5,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '' | '#'* ) continue ;;
+    esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(printf '%s' "$key" | tr -d '[:space:]')"
+    if [ -z "$key" ]; then
+      continue
+    fi
+    if [[ "$value" == '"'*'"' ]] || [[ "$value" == "'"*"'" ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    export "$key=$value"
+  done < .env
 fi
 
 HTTP_PORT="${TOOLHUB_HTTP_PORT:-8080}"
