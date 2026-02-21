@@ -41,6 +41,7 @@ jobs:
         run: |
           mkdir -p secrets data/artifacts data/postgres
           openssl genrsa -out secrets/github_app_private_key.pem 2048
+          chmod 0644 secrets/github_app_private_key.pem
           cp .env.example .env
           sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci_password/' .env
           sed -i 's/^REPO_ALLOWLIST=.*/REPO_ALLOWLIST=ci-owner\/ci-repo/' .env
