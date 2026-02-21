@@ -211,6 +211,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/prs/{prNumber}:
+    get:
+      summary: Get pull request metadata
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: prNumber
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/prs/{prNumber}/files:
+    get:
+      summary: List pull request files
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: prNumber
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Tool response envelope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     Run:

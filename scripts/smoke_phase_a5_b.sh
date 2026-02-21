@@ -43,9 +43,42 @@ if [ -z "$repo_value" ]; then
 fi
 
 allowlist_tools=",${TOOL_ALLOWLIST:-},"
-pr_tool_enabled=0
+pr_comment_enabled=0
 if [[ "$allowlist_tools" == *",github.pr.comment.create,"* ]]; then
-  pr_tool_enabled=1
+  pr_comment_enabled=1
+fi
+pr_read_enabled=0
+if [[ "$allowlist_tools" == *",github.pr.get,"* ]] && [[ "$allowlist_tools" == *",github.pr.files.list,"* ]]; then
+  pr_read_enabled=1
+fi
+
+pr_number="${SMOKE_PR_NUMBER:-}"
+if [ "$pr_read_enabled" = "1" ] && [ -z "$pr_number" ]; then
+  pr_number="$(python3 - <<'PY' "$repo_value"
+import json,sys,urllib.request
+repo=sys.argv[1]
+urls=[
+    f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=1",
+    f"https://api.github.com/repos/{repo}/pulls?state=closed&per_page=1",
+]
+for url in urls:
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data=json.loads(r.read().decode())
+            if isinstance(data,list) and data:
+                num=data[0].get("number")
+                if isinstance(num,int) and num > 0:
+                    print(num)
+                    sys.exit(0)
+    except Exception:
+        pass
+print("")
+PY
+)"
+  if [ -z "$pr_number" ]; then
+    pr_read_enabled=0
+    echo "[smoke] skipping PR read checks; no pull request found and SMOKE_PR_NUMBER not provided"
+  fi
 fi
 
 echo "[smoke] creating run for repo=${repo_value}"
@@ -94,7 +127,41 @@ assert result.get("status") in ("ok","partial","fail"), obj
 assert isinstance(result.get("results"), list), obj
 PY
 
-if [ "$pr_tool_enabled" = "1" ]; then
+if [ "$pr_read_enabled" = "1" ]; then
+  echo "[smoke] HTTP PR get"
+  pr_get_resp="$(curl -fsS "${BASE_URL}/api/v1/runs/${run_id}/prs/${pr_number}")"
+  python3 - <<'PY' "$pr_get_resp"
+import json,sys
+obj=json.loads(sys.argv[1])
+assert obj.get("ok") is True, obj
+meta=obj.get("meta") or {}
+assert meta.get("run_id"), obj
+assert meta.get("tool_call_id"), obj
+assert meta.get("evidence_hash"), obj
+result=obj.get("result") or {}
+assert "number" in result and "title" in result, obj
+PY
+
+  echo "[smoke] HTTP PR files list"
+  pr_files_resp="$(curl -fsS "${BASE_URL}/api/v1/runs/${run_id}/prs/${pr_number}/files")"
+  python3 - <<'PY' "$pr_files_resp"
+import json,sys
+obj=json.loads(sys.argv[1])
+assert obj.get("ok") is True, obj
+meta=obj.get("meta") or {}
+assert meta.get("run_id"), obj
+assert meta.get("tool_call_id"), obj
+assert meta.get("evidence_hash"), obj
+result=obj.get("result") or {}
+assert isinstance(result.get("files"), list), obj
+assert isinstance(result.get("count"), int), obj
+PY
+
+else
+  echo "[smoke] skipping PR read checks"
+fi
+
+if [ "$pr_comment_enabled" = "1" ]; then
   echo "[smoke] HTTP dry_run PR summary comment"
   pr_resp="$(curl -fsS -X POST "${BASE_URL}/api/v1/runs/${run_id}/prs/1/comment" \
     -H 'Content-Type: application/json' \
@@ -116,13 +183,16 @@ else
 fi
 
 echo "[smoke] MCP dry_run tool calls"
-python3 - <<'PY' "127.0.0.1" "$MCP_PORT" "$repo_value" "${TOOL_ALLOWLIST:-}"
+python3 - <<'PY' "127.0.0.1" "$MCP_PORT" "$repo_value" "${TOOL_ALLOWLIST:-}" "$pr_number" "$pr_read_enabled" "$pr_comment_enabled"
 import json, socket, sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
 repo = sys.argv[3]
 tool_allowlist = sys.argv[4]
+pr_number = int(sys.argv[5]) if sys.argv[5] else 1
+pr_read_enabled = sys.argv[6] == "1"
+pr_comment_enabled = sys.argv[7] == "1"
 
 def rpc(sock, msg):
     sock.sendall((json.dumps(msg) + "\n").encode())
@@ -144,9 +214,11 @@ with socket.create_connection((host, port), timeout=10) as s:
     for need in required:
         assert need in tools, (need, tools)
 
-    pr_enabled = "github.pr.comment.create" in tool_allowlist.split(",")
-    if pr_enabled:
+    if pr_comment_enabled:
         assert "github_pr_comment_create" in tools, tools
+    if pr_read_enabled:
+        assert "github_pr_get" in tools, tools
+        assert "github_pr_files_list" in tools, tools
 
     r = rpc(s, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -181,7 +253,30 @@ with socket.create_connection((host, port), timeout=10) as s:
     out = r.get("result")
     assert "result" in out and out.get("meta", {}).get("dry_run") is True, r
 
-    if pr_enabled:
+    if pr_read_enabled:
+        r = rpc(s, {
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": {
+                "name": "github_pr_get",
+                "arguments": {"run_id": run_id, "pr_number": pr_number},
+            },
+        })
+        out = r.get("result")
+        assert out.get("ok") is True, r
+        assert isinstance((out.get("result") or {}).get("number"), int), r
+
+        r = rpc(s, {
+            "jsonrpc": "2.0", "id": 52, "method": "tools/call",
+            "params": {
+                "name": "github_pr_files_list",
+                "arguments": {"run_id": run_id, "pr_number": pr_number},
+            },
+        })
+        out = r.get("result")
+        assert out.get("ok") is True, r
+        assert isinstance((out.get("result") or {}).get("files"), list), r
+
+    if pr_comment_enabled:
         r = rpc(s, {
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
             "params": {

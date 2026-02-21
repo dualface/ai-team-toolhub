@@ -159,7 +159,7 @@ ToolHub reads configuration via environment variables (see `.env.example`).
 
 - `TOOL_ALLOWLIST`  
   Comma-separated tool names allowed in this deployment phase.
-  Example: `github.issues.create,github.issues.batch_create,github.pr.comment.create,runs.create`
+  Example: `github.issues.create,github.issues.batch_create,github.pr.comment.create,github.pr.get,github.pr.files.list,runs.create`
 
 > ToolHub **must enforce** allowlists server-side. Do not rely on client discipline.
 
@@ -418,6 +418,54 @@ Response:
 }
 ```
 
+### 5) Get PR Metadata
+
+**GET** `/api/v1/runs/{runID}/prs/{prNumber}`
+
+Response:
+
+```json
+{
+  "ok": true,
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "tc_01J...",
+    "evidence_hash": "...",
+    "dry_run": false
+  },
+  "result": {
+    "number": 12,
+    "title": "...",
+    "state": "open",
+    "html_url": "https://github.com/owner/repo/pull/12"
+  }
+}
+```
+
+### 6) List PR Files
+
+**GET** `/api/v1/runs/{runID}/prs/{prNumber}/files`
+
+Response:
+
+```json
+{
+  "ok": true,
+  "meta": {
+    "run_id": "run_01J...",
+    "tool_call_id": "tc_01J...",
+    "evidence_hash": "...",
+    "dry_run": false
+  },
+  "result": {
+    "count": 2,
+    "files": [
+      { "filename": "README.md", "status": "modified", "changes": 10 }
+    ]
+  }
+}
+```
+
 ---
 
 ## MCP Tools
@@ -429,6 +477,8 @@ Current tool names:
 - `github_issues_create`
 - `github_issues_batch_create`
 - `github_pr_comment_create`
+- `github_pr_get`
+- `github_pr_files_list`
 
 Detailed MCP schema: `docs/mcp-tools.md`.
 
@@ -454,7 +504,8 @@ The script validates:
 - `GET /healthz` and `GET /version`
 - `POST /api/v1/runs`
 - HTTP dry-run for issues, batch issues, and PR summary comment
-- MCP tools list and dry-run calls for the same flows
+- HTTP PR metadata/file-list reads
+- MCP tools list and dry-run/read calls for the same flows
 
 ---
 
