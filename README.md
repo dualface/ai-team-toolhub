@@ -1,17 +1,21 @@
-# ToolHub (HTTP + MCP) — Phase A (PRD → GitHub Issues)
+# ToolHub (HTTP + MCP) — Phase A/A.5/B Complete, Phase C Baseline
 
 ToolHub is a production-oriented tool gateway for AI orchestration. It exposes a controlled set of tools via **HTTP** and **MCP**, records **auditable evidence** of every tool call into **PostgreSQL**, and persists artifacts (request/response/logs) to a local filesystem **Artifact Store**.
 
-**Phase A scope (current):**
+**Current implementation status:**
 - ✅ Create a `run`
 - ✅ Create single GitHub Issue
 - ✅ Batch create GitHub Issues
+- ✅ PR summary comment (`github.pr.comment.create`)
+- ✅ PR metadata read (`github.pr.get`)
+- ✅ PR files list (`github.pr.files.list`)
+- ✅ QA execution baseline (`qa.test`, `qa.lint`, with `dry_run` + audit evidence)
 - ✅ Persist evidence to PostgreSQL (`runs`, `tool_calls`, `artifacts`)
 - ✅ Persist artifacts to local directory (mounted volume)
 - ✅ Enforce `REPO_ALLOWLIST` + `TOOL_ALLOWLIST`
 - ✅ GitHub App auth (JWT → installation token)
 
-> This repo is intended to be a long-lived infrastructure base. Later phases can add PR commenting, QA execution, sandboxed code changes, etc.
+> This repo is intended to be a long-lived infrastructure base. Phase D (code changes via sandboxed patch/branch/PR) is intentionally not implemented yet.
 
 ---
 
@@ -191,12 +195,12 @@ ToolHub reads configuration via environment variables (see `.env.example`).
 1) GitHub → **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**
    - **GitHub App name**: any unique name (e.g. `toolhub-issues-bot`)
    - **Homepage URL**: your repo URL or any valid URL (required by GitHub UI)
-   - **Webhook**: disable for Phase A (not required)
+    - **Webhook**: optional (not required for current scope)
    - **Where can this GitHub App be installed?**: **Only on this account**
 2) Permissions:
    - **Metadata**: Read-only
-   - **Issues**: Read & Write
-   - (Optional) **Pull requests**: Read-only (not required for Phase A)
+    - **Issues**: Read & Write
+    - **Pull requests**: Read-only (required for PR read endpoints)
    - Keep all other permissions at **No access** unless you explicitly need them
 3) Install App:
    - Choose **Selected repositories**
@@ -591,7 +595,7 @@ ${ARTIFACTS_DIR}/run_<run_id>/
 
 ### PostgreSQL tables
 
-Phase A baseline schema:
+Current baseline schema:
 
 - `runs` — one workflow execution
 - `tool_calls` — each tool invocation
@@ -653,9 +657,9 @@ Do not commit `data/` to git.
 
 ## Security Model
 
-### Safety invariants (Phase A)
+### Safety invariants (Current)
 
-- ToolHub only performs **Issues** operations (no code write operations).
+- ToolHub performs controlled **issues/PR/QA** operations (no repository code write operations).
 - `REPO_ALLOWLIST` is enforced for every request.
 - `TOOL_ALLOWLIST` is enforced for every tool call.
 - GitHub App key is mounted read-only; never logged or persisted.
@@ -663,7 +667,7 @@ Do not commit `data/` to git.
 
 ### Recommended GitHub branch protections
 
-Even though Phase A does not push code:
+Even in current scope (A/A.5/B/C baseline), ToolHub does not push code:
 - Protect `main/master`
 - Require PR review + status checks (future-proofing)
 
