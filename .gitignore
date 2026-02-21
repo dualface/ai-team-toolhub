@@ -1,5 +1,8 @@
 # Hidden files
 .*
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 thumbs.db
 
 # Secrets

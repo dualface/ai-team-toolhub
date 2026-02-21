@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: toolhub
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: toolhub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U toolhub -d toolhub"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Go test
+        env:
+          TOOLHUB_TEST_DATABASE_URL: postgres://toolhub:ci_password@127.0.0.1:5432/toolhub?sslmode=disable
+        run: go -C toolhub test ./...
+
+      - name: Build
+        run: make build
+
+      - name: Prepare smoke env
+        run: |
+          mkdir -p secrets data/artifacts data/postgres
+          openssl genrsa -out secrets/github_app_private_key.pem 2048
+          cp .env.example .env
+          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci_password/' .env
+          sed -i 's/^REPO_ALLOWLIST=.*/REPO_ALLOWLIST=ci-owner\/ci-repo/' .env
+          sed -i 's/^GITHUB_APP_ID=.*/GITHUB_APP_ID=1/' .env
+          sed -i 's|^GITHUB_PRIVATE_KEY_PATH=.*|GITHUB_PRIVATE_KEY_PATH=/run/secrets/github_app_private_key.pem|' .env
+          sed -i 's/^TOOL_ALLOWLIST=.*/TOOL_ALLOWLIST=github.issues.create,github.issues.batch_create,github.pr.comment.create,runs.create/' .env
+
+      - name: Smoke dry-run (HTTP + MCP)
+        run: SMOKE_AUTO_START=1 ./scripts/smoke_phase_a5_b.sh
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
