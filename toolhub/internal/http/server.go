@@ -53,6 +53,8 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues", s.handleCreateIssue)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues/batch", s.handleBatchCreateIssues)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/prs/{prNumber}", s.handleGetPR)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/prs/{prNumber}/files", s.handleListPRFiles)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/prs/{prNumber}/comment", s.handleCreatePRComment)
 
 	s.srv = &http.Server{
@@ -163,6 +165,132 @@ type dryRunIssuePreview struct {
 type prCommentBody struct {
 	Body   string `json:"body"`
 	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	prNumberRaw := r.PathValue("prNumber")
+	prNumber := 0
+	if _, err := fmt.Sscanf(prNumberRaw, "%d", &prNumber); err != nil || prNumber <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid prNumber")
+		return
+	}
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeMappedErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	if err := s.policy.CheckTool("github.pr.get"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	pr, ghErr := s.gh.GetPullRequest(r.Context(), owner, repo, prNumber)
+
+	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: "github.pr.get",
+		Request:  map[string]any{"pr_number": prNumber},
+		Response: pr,
+		Err:      ghErr,
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", runID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "github.pr.get",
+		"repo", run.Repo,
+		"pr_number", prNumber,
+	)
+
+	if ghErr != nil {
+		writeMappedErr(w, ghErr, http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK: true,
+		Meta: toolResponseMeta{
+			RunID:        runID,
+			ToolCallID:   tc.ToolCallID,
+			EvidenceHash: tc.EvidenceHash,
+			DryRun:       false,
+		},
+		Result: pr,
+	})
+}
+
+func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	prNumberRaw := r.PathValue("prNumber")
+	prNumber := 0
+	if _, err := fmt.Sscanf(prNumberRaw, "%d", &prNumber); err != nil || prNumber <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid prNumber")
+		return
+	}
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeMappedErr(w, err, http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err := s.policy.CheckTool("github.pr.files.list"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	files, ghErr := s.gh.ListPullRequestFiles(r.Context(), owner, repo, prNumber)
+
+	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: "github.pr.files.list",
+		Request:  map[string]any{"pr_number": prNumber},
+		Response: map[string]any{"files": files, "count": len(files)},
+		Err:      ghErr,
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", runID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "github.pr.files.list",
+		"repo", run.Repo,
+		"pr_number", prNumber,
+	)
+
+	if ghErr != nil {
+		writeMappedErr(w, ghErr, http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK: true,
+		Meta: toolResponseMeta{
+			RunID:        runID,
+			ToolCallID:   tc.ToolCallID,
+			EvidenceHash: tc.EvidenceHash,
+			DryRun:       false,
+		},
+		Result: map[string]any{"files": files, "count": len(files)},
+	})
 }
 
 func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {

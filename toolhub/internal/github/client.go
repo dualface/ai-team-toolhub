@@ -212,6 +212,34 @@ type Comment struct {
 	HTMLURL string `json:"html_url"`
 }
 
+type PullRequest struct {
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	Draft     bool   `json:"draft"`
+	HTMLURL   string `json:"html_url"`
+	Merged    bool   `json:"merged"`
+	Mergeable *bool  `json:"mergeable,omitempty"`
+	Base      struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	Head struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+}
+
+type PullRequestFile struct {
+	Filename         string `json:"filename"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Changes          int    `json:"changes"`
+	BlobURL          string `json:"blob_url"`
+	RawURL           string `json:"raw_url"`
+	Patch            string `json:"patch,omitempty"`
+	PreviousFilename string `json:"previous_filename,omitempty"`
+}
+
 type APIError struct {
 	Operation  string
 	StatusCode int
@@ -297,6 +325,62 @@ func (c *Client) CreatePRComment(ctx context.Context, owner, repo string, prNumb
 		return nil, fmt.Errorf("decode pr comment: %w", err)
 	}
 	return &comment, nil
+}
+
+func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, prNumber int) (*PullRequest, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	resp, err := c.doAPI(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("get pull request HTTP %d and read body failed: %w", resp.StatusCode, readErr)
+		}
+		return nil, &APIError{Operation: "get pull request", StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	var pr PullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, fmt.Errorf("decode pull request: %w", err)
+	}
+	return &pr, nil
+}
+
+func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, prNumber int) ([]PullRequestFile, error) {
+	files := make([]PullRequestFile, 0)
+	for page := 1; page <= 10; page++ {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/files?per_page=100&page=%d", owner, repo, prNumber, page)
+		resp, err := c.doAPI(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("list pull request files HTTP %d and read body failed: %w", resp.StatusCode, readErr)
+			}
+			return nil, &APIError{Operation: "list pull request files", StatusCode: resp.StatusCode, Body: string(body)}
+		}
+
+		var pageFiles []PullRequestFile
+		if err := json.NewDecoder(resp.Body).Decode(&pageFiles); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decode pull request files: %w", err)
+		}
+		resp.Body.Close()
+
+		files = append(files, pageFiles...)
+		if len(pageFiles) < 100 {
+			break
+		}
+	}
+	return files, nil
 }
 
 func (c *Client) BatchCreateIssues(ctx context.Context, owner, repo string, issues []CreateIssueInput) ([]BatchResult, error) {

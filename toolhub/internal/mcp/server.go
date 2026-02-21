@@ -236,6 +236,30 @@ func (s *Server) toolDefinitions() []map[string]any {
 				"required": []string{"run_id", "pr_number", "body"},
 			},
 		},
+		{
+			"name":        "github_pr_get",
+			"description": "Get pull request metadata within a run",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":    map[string]string{"type": "string"},
+					"pr_number": map[string]string{"type": "integer"},
+				},
+				"required": []string{"run_id", "pr_number"},
+			},
+		},
+		{
+			"name":        "github_pr_files_list",
+			"description": "List pull request files within a run",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":    map[string]string{"type": "string"},
+					"pr_number": map[string]string{"type": "integer"},
+				},
+				"required": []string{"run_id", "pr_number"},
+			},
+		},
 	}
 }
 
@@ -260,6 +284,10 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolIssuesBatchCreate(ctx, params.Arguments, base)
 	case "github_pr_comment_create":
 		return s.toolPRCommentCreate(ctx, params.Arguments, base)
+	case "github_pr_get":
+		return s.toolPRGet(ctx, params.Arguments, base)
+	case "github_pr_files_list":
+		return s.toolPRFilesList(ctx, params.Arguments, base)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -538,6 +566,11 @@ type prCommentArgs struct {
 	DryRun   bool   `json:"dry_run,omitempty"`
 }
 
+type prReadArgs struct {
+	RunID    string `json:"run_id"`
+	PRNumber int    `json:"pr_number"`
+}
+
 func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
 	var args prCommentArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
@@ -556,6 +589,10 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 	run, err := s.runs.GetRun(ctx, args.RunID)
 	if err != nil || run == nil {
 		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("github.pr.get"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
 
@@ -619,6 +656,108 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 		result = map[string]any{"would_comment": map[string]any{"repo": run.Repo, "pr_number": args.PRNumber, "body": args.Body}}
 	}
 	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
+	return base
+}
+
+func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	var args prReadArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if args.PRNumber <= 0 {
+		base.Error = &rpcError{Code: -32602, Message: "pr_number must be positive"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("github.pr.files.list"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	pr, ghErr := s.gh.GetPullRequest(ctx, owner, repo, args.PRNumber)
+
+	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID: args.RunID, ToolName: "github.pr.get",
+		Request:  map[string]any{"pr_number": args.PRNumber},
+		Response: pr,
+		Err:      ghErr,
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "github.pr.get",
+		"repo", run.Repo,
+		"pr_number", args.PRNumber,
+	)
+
+	if ghErr != nil {
+		mapped := core.MapError(ghErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
+		return base
+	}
+
+	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: pr}
+	return base
+}
+
+func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	var args prReadArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if args.PRNumber <= 0 {
+		base.Error = &rpcError{Code: -32602, Message: "pr_number must be positive"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+
+	owner, repo := splitRepo(run.Repo)
+	files, ghErr := s.gh.ListPullRequestFiles(ctx, owner, repo, args.PRNumber)
+
+	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID: args.RunID, ToolName: "github.pr.files.list",
+		Request:  map[string]any{"pr_number": args.PRNumber},
+		Response: map[string]any{"files": files, "count": len(files)},
+		Err:      ghErr,
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	s.logger.Info("tool call completed",
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "github.pr.files.list",
+		"repo", run.Repo,
+		"pr_number", args.PRNumber,
+	)
+
+	if ghErr != nil {
+		mapped := core.MapError(ghErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
+		return base
+	}
+
+	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files)}}
 	return base
 }
 
