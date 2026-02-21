@@ -40,6 +40,7 @@ jobs:
       - name: Prepare smoke env
         run: |
           mkdir -p secrets data/artifacts data/postgres
+          chmod 0777 data/artifacts
           openssl genrsa -out secrets/github_app_private_key.pem 2048
           chmod 0644 secrets/github_app_private_key.pem
           cp .env.example .env
