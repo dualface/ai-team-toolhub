@@ -100,6 +100,14 @@ Key env vars:
 - `TOOL_ALLOWLIST`
 - `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `GITHUB_PRIVATE_KEY_PATH`
 - `QA_WORKDIR`, `QA_TEST_CMD`, `QA_LINT_CMD`, `QA_TIMEOUT_SECONDS`
+- `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`
+
+QA safety notes:
+
+- QA commands are server-configured (not user-supplied)
+- shell operators (`;`, `|`, `&&`, `||`, redirection) are blocked
+- executable must be in `QA_ALLOWED_EXECUTABLES`
+- stdout/stderr are truncated using `QA_MAX_OUTPUT_BYTES`
 
 Reference defaults are in `.env.example`.
 
