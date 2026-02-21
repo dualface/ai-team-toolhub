@@ -597,6 +597,15 @@ docker compose logs postgres
 
 ## Development
 
+### CI checks
+
+GitHub Actions workflow: `.github/workflows/ci.yml`
+
+It runs:
+- `go -C toolhub test ./...`
+- `make build`
+- `./scripts/smoke_phase_a5_b.sh` (dry-run over HTTP + MCP)
+
 ### Recommended repo layout (example)
 
 ```
