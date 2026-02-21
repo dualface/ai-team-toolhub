@@ -40,8 +40,10 @@ jobs:
       - name: Prepare smoke env
         run: |
           mkdir -p secrets data/artifacts data/postgres
+          # toolhub runs as non-root user in container; artifact dir must be writable.
           chmod 0777 data/artifacts
           openssl genrsa -out secrets/github_app_private_key.pem 2048
+          # bind-mounted key must be readable by non-root process inside container.
           chmod 0644 secrets/github_app_private_key.pem
           cp .env.example .env
           sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci_password/' .env

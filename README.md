@@ -92,6 +92,17 @@ It runs:
 - `make build`
 - `./scripts/smoke_phase_a5_b.sh`
 
+### Common CI smoke failures
+
+- `permission denied` for `/run/secrets/github_app_private_key.pem`
+  - Ensure the generated key file is world-readable in CI setup (`chmod 0644 secrets/github_app_private_key.pem`).
+- `x509: failed to parse private key ... ParsePKCS8PrivateKey`
+  - ToolHub now supports PKCS#1 and PKCS#8 RSA keys; keep using standard OpenSSL-generated RSA keys.
+- HTTP `500` on dry-run issue calls during smoke
+  - Dry-run still writes audit artifacts; ensure `data/artifacts` is writable by container user (CI currently sets `chmod 0777 data/artifacts`).
+- `curl: (56) Recv failure` right after `docker compose up`
+  - Service can be up before it is ready; smoke script now waits for `/healthz` before running checks.
+
 ## Configuration Notes
 
 Key env vars:
