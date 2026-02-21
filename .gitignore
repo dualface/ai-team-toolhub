@@ -1,3 +1,7 @@
+# Hidden files
+.*
+thumbs.db
+
 # Secrets
 secrets/github_app_private_key.pem
 
@@ -9,3 +13,8 @@ backups/
 
 # Local state (volumes)
 data/
+
+# Go build output
+toolhub/toolhub
+bin/
+*.exe

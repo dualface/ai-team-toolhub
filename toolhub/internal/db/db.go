@@ -172,6 +172,7 @@ type ToolCall struct {
 	ToolCallID         string    `json:"tool_call_id"`
 	RunID              string    `json:"run_id"`
 	ToolName           string    `json:"tool_name"`
+	IdempotencyKey     *string   `json:"idempotency_key,omitempty"`
 	Status             string    `json:"status"`
 	RequestArtifactID  *string   `json:"request_artifact_id,omitempty"`
 	ResponseArtifactID *string   `json:"response_artifact_id,omitempty"`
@@ -182,9 +183,9 @@ type ToolCall struct {
 // InsertToolCall creates a new tool call record.
 func (d *DB) InsertToolCall(ctx context.Context, tc *ToolCall) error {
 	_, err := d.conn.ExecContext(ctx,
-		`INSERT INTO tool_calls (tool_call_id, run_id, tool_name, status, request_artifact_id, response_artifact_id, evidence_hash, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		tc.ToolCallID, tc.RunID, tc.ToolName, tc.Status, tc.RequestArtifactID, tc.ResponseArtifactID, tc.EvidenceHash, tc.CreatedAt,
+		`INSERT INTO tool_calls (tool_call_id, run_id, tool_name, idempotency_key, status, request_artifact_id, response_artifact_id, evidence_hash, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		tc.ToolCallID, tc.RunID, tc.ToolName, tc.IdempotencyKey, tc.Status, tc.RequestArtifactID, tc.ResponseArtifactID, tc.EvidenceHash, tc.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert tool_call: %w", err)
@@ -192,10 +193,29 @@ func (d *DB) InsertToolCall(ctx context.Context, tc *ToolCall) error {
 	return nil
 }
 
+func (d *DB) GetSuccessfulToolCallByIdempotency(ctx context.Context, runID, toolName, idempotencyKey string) (*ToolCall, error) {
+	tc := &ToolCall{}
+	err := d.conn.QueryRowContext(ctx,
+		`SELECT tool_call_id, run_id, tool_name, idempotency_key, status, request_artifact_id, response_artifact_id, evidence_hash, created_at
+		 FROM tool_calls
+		 WHERE run_id = $1 AND tool_name = $2 AND idempotency_key = $3 AND status = 'ok'
+		 ORDER BY created_at DESC
+		 LIMIT 1`,
+		runID, toolName, idempotencyKey,
+	).Scan(&tc.ToolCallID, &tc.RunID, &tc.ToolName, &tc.IdempotencyKey, &tc.Status, &tc.RequestArtifactID, &tc.ResponseArtifactID, &tc.EvidenceHash, &tc.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get tool_call by idempotency: %w", err)
+	}
+	return tc, nil
+}
+
 // ListToolCallsByRun returns all tool calls for a given run.
 func (d *DB) ListToolCallsByRun(ctx context.Context, runID string) ([]*ToolCall, error) {
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT tool_call_id, run_id, tool_name, status, request_artifact_id, response_artifact_id, evidence_hash, created_at
+		`SELECT tool_call_id, run_id, tool_name, idempotency_key, status, request_artifact_id, response_artifact_id, evidence_hash, created_at
 		 FROM tool_calls WHERE run_id = $1 ORDER BY created_at`, runID,
 	)
 	if err != nil {
@@ -206,7 +226,7 @@ func (d *DB) ListToolCallsByRun(ctx context.Context, runID string) ([]*ToolCall,
 	var tcs []*ToolCall
 	for rows.Next() {
 		tc := &ToolCall{}
-		if err := rows.Scan(&tc.ToolCallID, &tc.RunID, &tc.ToolName, &tc.Status, &tc.RequestArtifactID, &tc.ResponseArtifactID, &tc.EvidenceHash, &tc.CreatedAt); err != nil {
+		if err := rows.Scan(&tc.ToolCallID, &tc.RunID, &tc.ToolName, &tc.IdempotencyKey, &tc.Status, &tc.RequestArtifactID, &tc.ResponseArtifactID, &tc.EvidenceHash, &tc.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan tool_call: %w", err)
 		}
 		tcs = append(tcs, tc)

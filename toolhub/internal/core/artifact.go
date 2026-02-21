@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,4 +89,23 @@ func (s *ArtifactStore) Get(ctx context.Context, artifactID string) (*db.Artifac
 // ListByRun returns all artifacts belonging to a run.
 func (s *ArtifactStore) ListByRun(ctx context.Context, runID string) ([]*db.Artifact, error) {
 	return s.db.ListArtifactsByRun(ctx, runID)
+}
+
+func (s *ArtifactStore) Read(ctx context.Context, artifactID string) ([]byte, error) {
+	art, err := s.Get(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if art == nil {
+		return nil, fmt.Errorf("artifact not found: %s", artifactID)
+	}
+	if !strings.HasPrefix(art.URI, "file://") {
+		return nil, fmt.Errorf("unsupported artifact URI: %s", art.URI)
+	}
+	path := strings.TrimPrefix(art.URI, "file://")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read artifact file: %w", err)
+	}
+	return b, nil
 }

@@ -30,6 +30,7 @@ func NewAuditService(database *db.DB, store *ArtifactStore, policy *Policy) *Aud
 type RecordInput struct {
 	RunID    string
 	ToolName string
+	IdemKey  *string
 	Request  any
 	Response any
 	Err      error
@@ -80,6 +81,7 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 		ToolCallID:         uuid.New().String(),
 		RunID:              in.RunID,
 		ToolName:           in.ToolName,
+		IdempotencyKey:     in.IdemKey,
 		Status:             status,
 		RequestArtifactID:  &reqArt.ArtifactID,
 		ResponseArtifactID: &respArt.ArtifactID,
@@ -90,4 +92,26 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 		return nil, fmt.Errorf("insert tool_call: %w", err)
 	}
 	return tc, nil
+}
+
+func (a *AuditService) ReplayResponse(ctx context.Context, runID, toolName, idempotencyKey string, out any) (bool, error) {
+	tc, err := a.db.GetSuccessfulToolCallByIdempotency(ctx, runID, toolName, idempotencyKey)
+	if err != nil {
+		return false, err
+	}
+	if tc == nil {
+		return false, nil
+	}
+	if tc.ResponseArtifactID == nil {
+		return false, fmt.Errorf("response artifact missing for replay")
+	}
+
+	b, err := a.store.Read(ctx, *tc.ResponseArtifactID)
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return false, fmt.Errorf("decode replay response: %w", err)
+	}
+	return true, nil
 }

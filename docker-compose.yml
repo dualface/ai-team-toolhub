@@ -19,6 +19,12 @@ services:
   toolhub:
     build:
       context: ./toolhub
+      args:
+        HTTPS_PROXY: ${TOOLHUB_HTTPS_PROXY:-}
+        HTTP_PROXY: ${TOOLHUB_HTTP_PROXY:-}
+        NO_PROXY: ${TOOLHUB_NO_PROXY:-}
+      extra_hosts:
+        - "host.docker.internal:host-gateway"
     container_name: toolhub
     depends_on:
       postgres:
@@ -26,17 +32,25 @@ services:
     environment:
       TOOLHUB_HTTP_LISTEN: 0.0.0.0:8080
       TOOLHUB_MCP_LISTEN: 0.0.0.0:8090
+      BATCH_MODE: ${BATCH_MODE}
 
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
 
       ARTIFACTS_DIR: ${ARTIFACTS_DIR}
 
       GITHUB_APP_ID: ${GITHUB_APP_ID}
-      GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID}
+      GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID:-}
       GITHUB_PRIVATE_KEY_PATH: ${GITHUB_PRIVATE_KEY_PATH}
 
       REPO_ALLOWLIST: ${REPO_ALLOWLIST}
       TOOL_ALLOWLIST: ${TOOL_ALLOWLIST}
+
+      HTTPS_PROXY: ${TOOLHUB_HTTPS_PROXY:-}
+      HTTP_PROXY: ${TOOLHUB_HTTP_PROXY:-}
+      NO_PROXY: ${TOOLHUB_NO_PROXY:-}
+      https_proxy: ${TOOLHUB_HTTPS_PROXY:-}
+      http_proxy: ${TOOLHUB_HTTP_PROXY:-}
+      no_proxy: ${TOOLHUB_NO_PROXY:-}
 
     ports:
       - "${TOOLHUB_HTTP_PORT}:8080"
@@ -45,5 +59,8 @@ services:
     volumes:
       - ./data/artifacts:${ARTIFACTS_DIR}
       - ./secrets/github_app_private_key.pem:/run/secrets/github_app_private_key.pem:ro
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     restart: unless-stopped
