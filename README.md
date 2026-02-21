@@ -25,6 +25,7 @@ ToolHub is a production-oriented tool gateway for AI orchestration. It exposes a
 - [API Overview (HTTP)](#api-overview-http)
 - [MCP Tools](#mcp-tools)
 - [OpenAPI](#openapi)
+- [Smoke Validation](#smoke-validation)
 - [Artifact & Audit Model](#artifact--audit-model)
 - [Backups](#backups)
 - [Operational Notes](#operational-notes)
@@ -436,6 +437,24 @@ Detailed MCP schema: `docs/mcp-tools.md`.
 - HTTP API contract file: `openapi.yaml`
 
 > How to connect depends on your agent framework. If ToolHub runs MCP on `${TOOLHUB_MCP_PORT}`, your orchestrator should connect to `localhost:${TOOLHUB_MCP_PORT}`.
+
+## Smoke Validation
+
+Run an end-to-end smoke check for HTTP + MCP dry-run paths:
+
+```bash
+./scripts/smoke_phase_a5_b.sh
+```
+
+Optional flags:
+- `SMOKE_AUTO_START=1` (default) will run `docker compose up -d --build` before checks.
+- `SMOKE_AUTO_START=0` expects services already running.
+
+The script validates:
+- `GET /healthz` and `GET /version`
+- `POST /api/v1/runs`
+- HTTP dry-run for issues, batch issues, and PR summary comment
+- MCP tools list and dry-run calls for the same flows
 
 ---
 
