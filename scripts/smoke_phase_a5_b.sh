@@ -51,6 +51,10 @@ pr_read_enabled=0
 if [[ "$allowlist_tools" == *",github.pr.get,"* ]] && [[ "$allowlist_tools" == *",github.pr.files.list,"* ]]; then
   pr_read_enabled=1
 fi
+qa_enabled=0
+if [[ "$allowlist_tools" == *",qa.test,"* ]] && [[ "$allowlist_tools" == *",qa.lint,"* ]]; then
+  qa_enabled=1
+fi
 
 pr_number="${SMOKE_PR_NUMBER:-}"
 if [ "$pr_read_enabled" = "1" ] && [ -z "$pr_number" ]; then
@@ -127,6 +131,46 @@ assert result.get("status") in ("ok","partial","fail"), obj
 assert isinstance(result.get("results"), list), obj
 PY
 
+if [ "$qa_enabled" = "1" ]; then
+  echo "[smoke] HTTP dry_run QA test"
+  qa_test_resp="$(curl -fsS -X POST "${BASE_URL}/api/v1/runs/${run_id}/qa/test" \
+    -H 'Content-Type: application/json' \
+    -d '{"dry_run":true}')"
+  python3 - <<'PY' "$qa_test_resp"
+import json,sys
+obj=json.loads(sys.argv[1])
+assert obj.get("ok") is True, obj
+meta=obj.get("meta") or {}
+assert meta.get("run_id"), obj
+assert meta.get("tool_call_id"), obj
+assert meta.get("evidence_hash"), obj
+assert meta.get("dry_run") is True, obj
+result=obj.get("result") or {}
+assert result.get("status") in ("ok","fail"), obj
+assert isinstance(result.get("report"), dict), obj
+PY
+
+  echo "[smoke] HTTP dry_run QA lint"
+  qa_lint_resp="$(curl -fsS -X POST "${BASE_URL}/api/v1/runs/${run_id}/qa/lint" \
+    -H 'Content-Type: application/json' \
+    -d '{"dry_run":true}')"
+  python3 - <<'PY' "$qa_lint_resp"
+import json,sys
+obj=json.loads(sys.argv[1])
+assert obj.get("ok") is True, obj
+meta=obj.get("meta") or {}
+assert meta.get("run_id"), obj
+assert meta.get("tool_call_id"), obj
+assert meta.get("evidence_hash"), obj
+assert meta.get("dry_run") is True, obj
+result=obj.get("result") or {}
+assert result.get("status") in ("ok","fail"), obj
+assert isinstance(result.get("report"), dict), obj
+PY
+else
+  echo "[smoke] skipping QA checks; qa.test and qa.lint not both in TOOL_ALLOWLIST"
+fi
+
 if [ "$pr_read_enabled" = "1" ]; then
   echo "[smoke] HTTP PR get"
   pr_get_resp="$(curl -fsS "${BASE_URL}/api/v1/runs/${run_id}/prs/${pr_number}")"
@@ -183,7 +227,7 @@ else
 fi
 
 echo "[smoke] MCP dry_run tool calls"
-python3 - <<'PY' "127.0.0.1" "$MCP_PORT" "$repo_value" "${TOOL_ALLOWLIST:-}" "$pr_number" "$pr_read_enabled" "$pr_comment_enabled"
+python3 - <<'PY' "127.0.0.1" "$MCP_PORT" "$repo_value" "${TOOL_ALLOWLIST:-}" "$pr_number" "$pr_read_enabled" "$pr_comment_enabled" "$qa_enabled"
 import json, socket, sys
 
 host = sys.argv[1]
@@ -193,6 +237,7 @@ tool_allowlist = sys.argv[4]
 pr_number = int(sys.argv[5]) if sys.argv[5] else 1
 pr_read_enabled = sys.argv[6] == "1"
 pr_comment_enabled = sys.argv[7] == "1"
+qa_enabled = sys.argv[8] == "1"
 
 def rpc(sock, msg):
     sock.sendall((json.dumps(msg) + "\n").encode())
@@ -211,6 +256,8 @@ with socket.create_connection((host, port), timeout=10) as s:
     r = rpc(s, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     tools = {t["name"] for t in r.get("result", {}).get("tools", [])}
     required = ["runs_create", "github_issues_create", "github_issues_batch_create"]
+    if qa_enabled:
+        required.extend(["qa_test", "qa_lint"])
     for need in required:
         assert need in tools, (need, tools)
 
@@ -252,6 +299,27 @@ with socket.create_connection((host, port), timeout=10) as s:
     })
     out = r.get("result")
     assert "result" in out and out.get("meta", {}).get("dry_run") is True, r
+
+    if qa_enabled:
+        r = rpc(s, {
+            "jsonrpc": "2.0", "id": 53, "method": "tools/call",
+            "params": {
+                "name": "qa_test",
+                "arguments": {"run_id": run_id, "dry_run": True},
+            },
+        })
+        out = r.get("result")
+        assert out and out.get("meta", {}).get("dry_run") is True, r
+
+        r = rpc(s, {
+            "jsonrpc": "2.0", "id": 54, "method": "tools/call",
+            "params": {
+                "name": "qa_lint",
+                "arguments": {"run_id": run_id, "dry_run": True},
+            },
+        })
+        out = r.get("result")
+        assert out and out.get("meta", {}).get("dry_run") is True, r
 
     if pr_read_enabled:
         r = rpc(s, {

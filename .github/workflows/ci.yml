@@ -46,7 +46,11 @@ jobs:
           sed -i 's/^REPO_ALLOWLIST=.*/REPO_ALLOWLIST=ci-owner\/ci-repo/' .env
           sed -i 's/^GITHUB_APP_ID=.*/GITHUB_APP_ID=1/' .env
           sed -i 's|^GITHUB_PRIVATE_KEY_PATH=.*|GITHUB_PRIVATE_KEY_PATH=/run/secrets/github_app_private_key.pem|' .env
-          sed -i 's/^TOOL_ALLOWLIST=.*/TOOL_ALLOWLIST=github.issues.create,github.issues.batch_create,github.pr.comment.create,runs.create/' .env
+          sed -i 's/^TOOL_ALLOWLIST=.*/TOOL_ALLOWLIST=github.issues.create,github.issues.batch_create,github.pr.comment.create,github.pr.get,github.pr.files.list,qa.test,qa.lint,runs.create/' .env
+          sed -i 's|^QA_WORKDIR=.*|QA_WORKDIR=.|' .env
+          sed -i 's|^QA_TEST_CMD=.*|QA_TEST_CMD=go -C toolhub test ./...|' .env
+          sed -i 's|^QA_LINT_CMD=.*|QA_LINT_CMD=go -C toolhub test ./...|' .env
+          sed -i 's|^QA_TIMEOUT_SECONDS=.*|QA_TIMEOUT_SECONDS=600|' .env
 
       - name: Smoke dry-run (HTTP + MCP)
         run: SMOKE_AUTO_START=1 ./scripts/smoke_phase_a5_b.sh
