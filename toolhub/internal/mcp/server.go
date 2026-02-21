@@ -15,6 +15,7 @@ import (
 
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
+	"github.com/toolhub/toolhub/internal/qa"
 )
 
 type Server struct {
@@ -22,6 +23,7 @@ type Server struct {
 	audit  *core.AuditService
 	policy *core.Policy
 	gh     *gh.Client
+	qa     *qa.Runner
 	addr   string
 	logger *slog.Logger
 	mode   core.BatchMode
@@ -31,12 +33,13 @@ type Server struct {
 	closed bool
 }
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, logger *slog.Logger, mode core.BatchMode) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, logger *slog.Logger, mode core.BatchMode) *Server {
 	return &Server{
 		runs:   runs,
 		audit:  audit,
 		policy: policy,
 		gh:     ghClient,
+		qa:     qaRunner,
 		addr:   addr,
 		logger: logger,
 		mode:   mode,
@@ -260,6 +263,30 @@ func (s *Server) toolDefinitions() []map[string]any {
 				"required": []string{"run_id", "pr_number"},
 			},
 		},
+		{
+			"name":        "qa_test",
+			"description": "Execute configured test command and capture output",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":  map[string]string{"type": "string"},
+					"dry_run": map[string]string{"type": "boolean"},
+				},
+				"required": []string{"run_id"},
+			},
+		},
+		{
+			"name":        "qa_lint",
+			"description": "Execute configured lint command and capture output",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":  map[string]string{"type": "string"},
+					"dry_run": map[string]string{"type": "boolean"},
+				},
+				"required": []string{"run_id"},
+			},
+		},
 	}
 }
 
@@ -288,6 +315,10 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolPRGet(ctx, params.Arguments, base)
 	case "github_pr_files_list":
 		return s.toolPRFilesList(ctx, params.Arguments, base)
+	case "qa_test":
+		return s.toolQA(ctx, params.Arguments, base, qa.KindTest)
+	case "qa_lint":
+		return s.toolQA(ctx, params.Arguments, base, qa.KindLint)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -571,6 +602,11 @@ type prReadArgs struct {
 	PRNumber int    `json:"pr_number"`
 }
 
+type qaArgs struct {
+	RunID  string `json:"run_id"`
+	DryRun bool   `json:"dry_run,omitempty"`
+}
+
 func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
 	var args prCommentArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
@@ -758,6 +794,72 @@ func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base 
 	}
 
 	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files)}}
+	return base
+}
+
+func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCResponse, kind qa.Kind) jsonRPCResponse {
+	var args qaArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if strings.TrimSpace(args.RunID) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "run_id is required"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool(string(kind)); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+
+	report, runErr := s.qa.Run(ctx, kind, args.DryRun)
+	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID: args.RunID, ToolName: string(kind),
+		Request:  args,
+		Response: map[string]any{"report": report},
+		Err:      runErr,
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	if runErr != nil {
+		s.logger.Error("tool call failed",
+			"run_id", args.RunID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", string(kind),
+			"repo", run.Repo,
+			"err", runErr,
+		)
+	} else {
+		s.logger.Info("tool call completed",
+			"run_id", args.RunID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", string(kind),
+			"repo", run.Repo,
+			"dry_run", args.DryRun,
+		)
+	}
+
+	status := "ok"
+	if runErr != nil {
+		status = "fail"
+	}
+	base.Result = toolEnvelope{
+		OK:   runErr == nil,
+		Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun},
+		Result: map[string]any{
+			"status": status,
+			"report": report,
+		},
+	}
 	return base
 }
 

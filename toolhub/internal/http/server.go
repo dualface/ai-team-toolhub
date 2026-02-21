@@ -14,6 +14,7 @@ import (
 
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
+	"github.com/toolhub/toolhub/internal/qa"
 )
 
 type Server struct {
@@ -25,6 +26,7 @@ type Server struct {
 	logger *slog.Logger
 	mode   core.BatchMode
 	build  BuildInfo
+	qa     *qa.Runner
 }
 
 type BuildInfo struct {
@@ -35,12 +37,13 @@ type BuildInfo struct {
 
 const maxRequestBodyBytes = 1 << 20
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
 	s := &Server{
 		runs:   runs,
 		audit:  audit,
 		policy: policy,
 		gh:     ghClient,
+		qa:     qaRunner,
 		logger: logger,
 		mode:   mode,
 		build:  build,
@@ -53,6 +56,8 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues", s.handleCreateIssue)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues/batch", s.handleBatchCreateIssues)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/qa/test", s.handleQATest)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/qa/lint", s.handleQALint)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/prs/{prNumber}", s.handleGetPR)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/prs/{prNumber}/files", s.handleListPRFiles)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/prs/{prNumber}/comment", s.handleCreatePRComment)
@@ -165,6 +170,85 @@ type dryRunIssuePreview struct {
 type prCommentBody struct {
 	Body   string `json:"body"`
 	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+type qaBody struct {
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+func (s *Server) handleQATest(w http.ResponseWriter, r *http.Request) {
+	s.handleQA(w, r, qa.KindTest)
+}
+
+func (s *Server) handleQALint(w http.ResponseWriter, r *http.Request) {
+	s.handleQA(w, r, qa.KindLint)
+}
+
+func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) {
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err := s.policy.CheckTool(string(kind)); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	var body qaBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+
+	report, runErr := s.qa.Run(r.Context(), kind, body.DryRun)
+	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: string(kind),
+		Request:  body,
+		Response: map[string]any{"report": report},
+		Err:      runErr,
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	status := "ok"
+	if runErr != nil {
+		status = "fail"
+		s.logger.Error("tool call failed",
+			"run_id", runID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", string(kind),
+			"repo", run.Repo,
+			"err", runErr,
+		)
+	} else {
+		s.logger.Info("tool call completed",
+			"run_id", runID,
+			"tool_call_id", tc.ToolCallID,
+			"tool_name", string(kind),
+			"repo", run.Repo,
+			"dry_run", body.DryRun,
+		)
+	}
+
+	writeJSON(w, http.StatusOK, toolResponse{
+		OK: runErr == nil,
+		Meta: toolResponseMeta{
+			RunID:        runID,
+			ToolCallID:   tc.ToolCallID,
+			EvidenceHash: tc.EvidenceHash,
+			DryRun:       body.DryRun,
+		},
+		Result: map[string]any{"status": status, "report": report},
+	})
 }
 
 func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {

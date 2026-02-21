@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	gh "github.com/toolhub/toolhub/internal/github"
 	httpsvr "github.com/toolhub/toolhub/internal/http"
 	mcpsvr "github.com/toolhub/toolhub/internal/mcp"
+	"github.com/toolhub/toolhub/internal/qa"
 )
 
 var (
@@ -67,6 +69,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	qaTimeout := 10 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("QA_TIMEOUT_SECONDS")); raw != "" {
+		secs, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || secs <= 0 {
+			logger.Error("invalid QA_TIMEOUT_SECONDS", "value", raw)
+			os.Exit(1)
+		}
+		qaTimeout = time.Duration(secs) * time.Second
+	}
+	qaRunner := qa.NewRunner(qa.Config{
+		WorkDir: envOrDefault("QA_WORKDIR", "."),
+		TestCmd: envOrDefault("QA_TEST_CMD", "go -C toolhub test ./..."),
+		LintCmd: envOrDefault("QA_LINT_CMD", "go -C toolhub test ./..."),
+		Timeout: qaTimeout,
+	})
+
 	httpAddr := envOrDefault("TOOLHUB_HTTP_LISTEN", "0.0.0.0:8080")
 	mcpAddr := envOrDefault("TOOLHUB_MCP_LISTEN", "0.0.0.0:8090")
 	batchMode, err := core.ParseBatchMode(os.Getenv("BATCH_MODE"))
@@ -75,12 +93,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, logger, batchMode, httpsvr.BuildInfo{
+	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, logger, batchMode, httpsvr.BuildInfo{
 		Version:   version,
 		GitCommit: gitCommit,
 		BuildTime: buildTime,
 	})
-	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, logger, batchMode)
+	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, logger, batchMode)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- httpServer.ListenAndServe() }()
