@@ -121,6 +121,9 @@ Workflow: `.github/workflows/ci.yml`
 It runs:
 
 - `go -C toolhub test ./...`
+- OpenAPI validation
+- MCP docs generation check
+- Doc drift guardrails (`TestDocDrift_*` — env vars, endpoints, MCP tools vs docs)
 - `make build`
 - `./scripts/smoke_phase_a5_b.sh`
 
@@ -139,6 +142,7 @@ It runs:
 
 Key env vars:
 
+- `TOOLHUB_PROFILE` — environment profile (`dev`, `staging`, `prod`); sets defaults for policy, QA timeout, batch mode
 - `REPO_ALLOWLIST`
 - `TOOL_ALLOWLIST`
 - `PATH_POLICY_FORBIDDEN_PREFIXES`, `PATH_POLICY_APPROVAL_PREFIXES`
