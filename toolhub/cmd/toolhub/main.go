@@ -28,6 +28,14 @@ var (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	profileName := strings.TrimSpace(os.Getenv("TOOLHUB_PROFILE"))
+	profile, err := core.LoadProfile(profileName)
+	if err != nil {
+		logger.Error("invalid TOOLHUB_PROFILE", "value", profileName, "err", err)
+		os.Exit(1)
+	}
+	logger.Info("profile loaded", "profile", profile.Name)
+
 	database, err := db.New(requireEnv("DATABASE_URL"))
 	if err != nil {
 		logger.Error("database connection failed", "err", err)
@@ -46,10 +54,9 @@ func main() {
 		os.Getenv("REPO_ALLOWLIST"),
 		os.Getenv("TOOL_ALLOWLIST"),
 	)
-	policy.SetPathPolicy(
-		os.Getenv("PATH_POLICY_FORBIDDEN_PREFIXES"),
-		os.Getenv("PATH_POLICY_APPROVAL_PREFIXES"),
-	)
+	forbiddenPrefixes := envOrDefault("PATH_POLICY_FORBIDDEN_PREFIXES", profile.PathPolicyForbiddenPrefixes)
+	approvalPrefixes := envOrDefault("PATH_POLICY_APPROVAL_PREFIXES", profile.PathPolicyApprovalPrefixes)
+	policy.SetPathPolicy(forbiddenPrefixes, approvalPrefixes)
 
 	runService := core.NewRunService(database)
 	auditService := core.NewAuditService(database, artifactStore, policy)
@@ -74,15 +81,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	qaTimeout := 10 * time.Minute
+	qaTimeoutSecs := profile.QATimeoutSeconds
 	if raw := strings.TrimSpace(os.Getenv("QA_TIMEOUT_SECONDS")); raw != "" {
 		secs, parseErr := strconv.Atoi(raw)
 		if parseErr != nil || secs <= 0 {
 			logger.Error("invalid QA_TIMEOUT_SECONDS", "value", raw)
 			os.Exit(1)
 		}
-		qaTimeout = time.Duration(secs) * time.Second
+		qaTimeoutSecs = secs
 	}
+	qaTimeout := time.Duration(qaTimeoutSecs) * time.Second
 	qaMaxOutputBytes := 256 * 1024
 	if raw := strings.TrimSpace(os.Getenv("QA_MAX_OUTPUT_BYTES")); raw != "" {
 		bytes, parseErr := strconv.Atoi(raw)
@@ -135,11 +143,19 @@ func main() {
 
 	httpAddr := envOrDefault("TOOLHUB_HTTP_LISTEN", "0.0.0.0:8080")
 	mcpAddr := envOrDefault("TOOLHUB_MCP_LISTEN", "0.0.0.0:8090")
-	batchMode, err := core.ParseBatchMode(os.Getenv("BATCH_MODE"))
+	batchMode, err := core.ParseBatchMode(envOrDefault("BATCH_MODE", profile.BatchMode))
 	if err != nil {
 		logger.Error("invalid BATCH_MODE", "err", err)
 		os.Exit(1)
 	}
+
+	logger.Info("effective config",
+		"profile", profile.Name,
+		"path_policy_forbidden_prefixes", forbiddenPrefixes,
+		"path_policy_approval_prefixes", approvalPrefixes,
+		"qa_timeout_seconds", qaTimeoutSecs,
+		"batch_mode", string(batchMode),
+	)
 
 	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, httpsvr.BuildInfo{
 		Version:         version,
