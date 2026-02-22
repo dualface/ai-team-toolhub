@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/toolhub/toolhub/internal/db"
+	"github.com/toolhub/toolhub/internal/telemetry"
 )
 
 // AuditService records every tool invocation with full request/response
@@ -60,6 +61,7 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 		Body:        bytes.NewReader(reqJSON),
 	})
 	if err != nil {
+		telemetry.IncArtifactWriteFailure()
 		return nil, nil, fmt.Errorf("save request artifact: %w", err)
 	}
 
@@ -74,6 +76,7 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 		Body:        bytes.NewReader(respJSON),
 	})
 	if err != nil {
+		telemetry.IncArtifactWriteFailure()
 		return nil, nil, fmt.Errorf("save response artifact: %w", err)
 	}
 
@@ -86,6 +89,7 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 			Body:        bytes.NewReader(extra.Body),
 		})
 		if err != nil {
+			telemetry.IncArtifactWriteFailure()
 			return nil, nil, fmt.Errorf("save extra artifact %q: %w", extra.Name, err)
 		}
 		extraArtifactIDs = append(extraArtifactIDs, extraArt.ArtifactID)
@@ -112,6 +116,7 @@ func (a *AuditService) Record(ctx context.Context, in RecordInput) (*db.ToolCall
 	if err := a.db.InsertToolCall(ctx, tc); err != nil {
 		return nil, nil, fmt.Errorf("insert tool_call: %w", err)
 	}
+	telemetry.IncToolCall(in.ToolName, status)
 	return tc, extraArtifactIDs, nil
 }
 

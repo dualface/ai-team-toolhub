@@ -18,6 +18,7 @@ import (
 	"github.com/toolhub/toolhub/internal/db"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
+	"github.com/toolhub/toolhub/internal/telemetry"
 )
 
 type Server struct {
@@ -68,6 +69,7 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("POST /api/v1/runs", s.handleCreateRun)
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
@@ -108,6 +110,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, telemetry.RenderPrometheus())
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +320,9 @@ func (s *Server) handleQALint(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration(string(kind), time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 	run, err := s.runs.GetRun(r.Context(), runID)
 	if err != nil {
@@ -433,6 +444,9 @@ func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) 
 }
 
 func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("github.pr.get", time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 	prNumberRaw := r.PathValue("prNumber")
 	prNumber := 0
@@ -497,6 +511,9 @@ func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("github.pr.files.list", time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 	prNumberRaw := r.PathValue("prNumber")
 	prNumber := 0
@@ -561,6 +578,9 @@ func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("github.issues.create", time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 
 	run, err := s.runs.GetRun(r.Context(), runID)
@@ -724,6 +744,9 @@ type batchResponseJSON struct {
 }
 
 func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("github.issues.batch_create", time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 
 	run, err := s.runs.GetRun(r.Context(), runID)
@@ -880,6 +903,9 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("github.pr.comment.create", time.Since(start)) }()
+
 	runID := r.PathValue("runID")
 	prNumberRaw := r.PathValue("prNumber")
 	prNumber := 0

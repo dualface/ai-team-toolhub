@@ -12,11 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
+	"github.com/toolhub/toolhub/internal/telemetry"
 )
 
 type ctxKey string
@@ -167,6 +169,10 @@ func (s *Server) dispatch(ctx context.Context, req jsonRPCRequest) jsonRPCRespon
 }
 
 func (s *Server) toolDefinitions() []map[string]any {
+	return ToolDefinitions()
+}
+
+func ToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "runs_create",
@@ -295,6 +301,9 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		base.Error = &rpcError{Code: -32602, Message: "invalid params: " + err.Error()}
 		return base
 	}
+
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration(params.Name, time.Since(start)) }()
 
 	switch params.Name {
 	case "runs_create":

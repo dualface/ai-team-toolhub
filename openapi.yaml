@@ -19,6 +19,16 @@ paths:
                 properties:
                   status:
                     type: string
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Metrics in Prometheus text format
+          content:
+            text/plain:
+              schema:
+                type: string
   /version:
     get:
       summary: Build metadata

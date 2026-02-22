@@ -45,6 +45,7 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 ## Main HTTP Endpoints
 
 - `POST /api/v1/runs`
+- `GET /metrics`
 - `GET /api/v1/runs/{runID}`
 - `GET /api/v1/runs/{runID}/tool-calls`
 - `GET /api/v1/runs/{runID}/artifacts`
@@ -78,6 +79,7 @@ Idempotency notes:
 - `qa_lint`
 
 See tool schemas in `docs/mcp-tools.md`.
+Generated MCP tool snapshot is in `docs/mcp-tools.generated.md`.
 
 Idempotency design notes for batch behavior are documented in `docs/C4_BATCH_IDEMPOTENCY.md`.
 

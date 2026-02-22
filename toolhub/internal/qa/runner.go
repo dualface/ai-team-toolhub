@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/toolhub/toolhub/internal/telemetry"
 )
 
 type Kind string
@@ -228,6 +230,7 @@ func (r *Runner) Run(ctx context.Context, kind Kind, dryRun bool) (Report, error
 
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 		report.ExitCode = -1
+		telemetry.IncQATimeout()
 		return report, &QAError{ErrCode: ErrCodeTimeout, Detail: fmt.Sprintf("qa command timed out after %s", r.cfg.Timeout)}
 	}
 

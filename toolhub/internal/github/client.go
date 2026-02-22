@@ -18,6 +18,7 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/toolhub/toolhub/internal/telemetry"
 )
 
 type Client struct {
@@ -298,6 +299,7 @@ func (c *Client) CreateIssue(ctx context.Context, owner, repo string, in CreateI
 		if readErr != nil {
 			lastErr = fmt.Errorf("create issue HTTP %d and read body failed: %w", resp.StatusCode, readErr)
 		} else {
+			telemetry.IncGitHubAPIError("create issue", resp.StatusCode)
 			lastErr = &APIError{Operation: "create issue", StatusCode: resp.StatusCode, Body: string(body)}
 		}
 
@@ -333,6 +335,7 @@ func (c *Client) CreatePRComment(ctx context.Context, owner, repo string, prNumb
 		if readErr != nil {
 			return nil, fmt.Errorf("create pr comment HTTP %d and read body failed: %w", resp.StatusCode, readErr)
 		}
+		telemetry.IncGitHubAPIError("create pr comment", resp.StatusCode)
 		return nil, &APIError{Operation: "create pr comment", StatusCode: resp.StatusCode, Body: string(b)}
 	}
 
@@ -356,6 +359,7 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, prNumbe
 		if readErr != nil {
 			return nil, fmt.Errorf("get pull request HTTP %d and read body failed: %w", resp.StatusCode, readErr)
 		}
+		telemetry.IncGitHubAPIError("get pull request", resp.StatusCode)
 		return nil, &APIError{Operation: "get pull request", StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
@@ -381,6 +385,7 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, p
 			if readErr != nil {
 				return nil, fmt.Errorf("list pull request files HTTP %d and read body failed: %w", resp.StatusCode, readErr)
 			}
+			telemetry.IncGitHubAPIError("list pull request files", resp.StatusCode)
 			return nil, &APIError{Operation: "list pull request files", StatusCode: resp.StatusCode, Body: string(body)}
 		}
 
