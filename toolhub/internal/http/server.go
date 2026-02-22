@@ -83,6 +83,7 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/reject", s.handleRejectApproval)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/code/patch", s.handleGeneratePatch)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/code/branch-pr", s.handleCodeBranchPR)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/code/repair-loop", s.handleCodeRepairLoop)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/tool-calls", s.handleListToolCalls)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}", s.handleGetArtifact)
@@ -484,6 +485,18 @@ type codeBranchPRBody struct {
 	DryRun        bool                 `json:"dry_run,omitempty"`
 }
 
+type codeRepairLoopBody struct {
+	ApprovalID    string               `json:"approval_id"`
+	BaseBranch    string               `json:"base_branch"`
+	HeadBranch    string               `json:"head_branch"`
+	CommitMessage string               `json:"commit_message"`
+	PRTitle       string               `json:"pr_title"`
+	PRBody        string               `json:"pr_body,omitempty"`
+	Files         []codeops.FileChange `json:"files"`
+	MaxIterations int                  `json:"max_iterations,omitempty"`
+	DryRun        bool                 `json:"dry_run,omitempty"`
+}
+
 func (s *Server) handleGeneratePatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer func() { telemetry.ObserveToolDuration("code.patch.generate", time.Since(start)) }()
@@ -669,6 +682,210 @@ func (s *Server) handleCodeBranchPR(w http.ResponseWriter, r *http.Request) {
 	if len(extraIDs) > 0 {
 		result["patch_artifact_id"] = extraIDs[0]
 	}
+
+	if runErr != nil {
+		writeMappedErr(w, runErr, http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
+		OK:     true,
+		Meta:   core.ToolMeta{RunID: runID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: body.DryRun},
+		Result: result,
+	})
+}
+
+func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("code.repair_loop", time.Since(start)) }()
+
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err := s.policy.CheckTool("code.repair_loop"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if s.code == nil {
+		writeErr(w, http.StatusInternalServerError, "code runner is not configured")
+		return
+	}
+	if s.qa == nil {
+		writeErr(w, http.StatusInternalServerError, "qa runner is not configured")
+		return
+	}
+
+	var body codeRepairLoopBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if body.MaxIterations <= 0 {
+		body.MaxIterations = 1
+	}
+	if body.MaxIterations > 3 {
+		writeErr(w, http.StatusBadRequest, "max_iterations cannot exceed 3")
+		return
+	}
+	if strings.TrimSpace(body.ApprovalID) == "" {
+		writeErr(w, http.StatusBadRequest, "approval_id is required")
+		return
+	}
+
+	approval, err := s.audit.GetApproval(r.Context(), body.ApprovalID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if approval == nil || approval.RunID != runID {
+		writeErr(w, http.StatusNotFound, "approval not found")
+		return
+	}
+	if approval.Status != "approved" {
+		writeErr(w, http.StatusForbidden, "approval is not approved")
+		return
+	}
+
+	paths := make([]string, 0, len(body.Files))
+	for _, f := range body.Files {
+		paths = append(paths, f.Path)
+	}
+	if err := s.policy.CheckPaths(paths); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	step, err := s.audit.StartStep(r.Context(), runID, "code_repair_loop", "repair_loop")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": body.MaxIterations})
+
+	codeResult, runErr := s.code.Execute(r.Context(), codeops.Request{
+		BaseBranch:    body.BaseBranch,
+		HeadBranch:    body.HeadBranch,
+		CommitMessage: body.CommitMessage,
+		Files:         body.Files,
+		DryRun:        body.DryRun,
+	})
+	if codeResult == nil {
+		codeResult = &codeops.Result{}
+	}
+
+	iterationsRun := 0
+	qaPassed := false
+	qaAttempts := make([]map[string]any, 0, body.MaxIterations)
+
+	result := map[string]any{
+		"iterations_requested": body.MaxIterations,
+		"iterations_run":       iterationsRun,
+		"base_branch":          body.BaseBranch,
+		"head_branch":          body.HeadBranch,
+		"planned_commands":     codeResult.PlannedCommands,
+		"commit_hash":          codeResult.CommitHash,
+		"qa_passed":            qaPassed,
+		"status":               "completed",
+	}
+
+	if runErr == nil && !body.DryRun {
+		for i := 1; i <= body.MaxIterations; i++ {
+			iterationsRun = i
+
+			testReport, testErr := s.qa.Run(r.Context(), qa.KindTest, false)
+			lintReport, lintErr := s.qa.Run(r.Context(), qa.KindLint, false)
+
+			attempt := map[string]any{
+				"iteration":   i,
+				"test_status": string(qa.DeriveStatus(testReport, testErr, false)),
+				"lint_status": string(qa.DeriveStatus(lintReport, lintErr, false)),
+				"test_report": testReport,
+				"lint_report": lintReport,
+			}
+			if testErr != nil {
+				attempt["test_error"] = testErr.Error()
+			}
+			if lintErr != nil {
+				attempt["lint_error"] = lintErr.Error()
+			}
+			qaAttempts = append(qaAttempts, attempt)
+			_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_iteration", attempt)
+
+			if testErr == nil && lintErr == nil {
+				qaPassed = true
+				break
+			}
+		}
+
+		if !qaPassed {
+			result["status"] = "failed"
+			result["qa_failure_reason"] = fmt.Sprintf("qa checks failed after %d iteration(s)", iterationsRun)
+
+			rollback, rollbackErr := s.code.RollbackBranch(r.Context(), body.BaseBranch, body.HeadBranch, false)
+			if rollback != nil {
+				result["rollback_planned_commands"] = rollback.PlannedCommands
+			}
+			if rollbackErr != nil {
+				result["rollback_error"] = rollbackErr.Error()
+			}
+			runErr = fmt.Errorf("qa checks failed")
+		}
+	}
+
+	result["iterations_run"] = iterationsRun
+	result["qa_passed"] = qaPassed
+	if len(qaAttempts) > 0 {
+		result["qa_attempts"] = qaAttempts
+	}
+
+	if runErr == nil && !body.DryRun && qaPassed {
+		owner, repo := splitRepo(run.Repo)
+		pr, prErr := s.gh.CreatePullRequest(r.Context(), owner, repo, gh.CreatePullRequestInput{
+			Title: body.PRTitle,
+			Head:  body.HeadBranch,
+			Base:  body.BaseBranch,
+			Body:  body.PRBody,
+		})
+		if prErr != nil {
+			runErr = prErr
+		} else {
+			result["pull_request"] = pr
+		}
+	}
+
+	if runErr != nil {
+		result["status"] = "failed"
+	} else if body.DryRun {
+		result["status"] = "dry_run"
+	}
+
+	tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: "code.repair_loop",
+		Request:  body,
+		Response: result,
+		Err:      runErr,
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	decisionType := "repair_loop_completed"
+	stepStatus := "completed"
+	if runErr != nil {
+		decisionType = "repair_loop_failed"
+		stepStatus = "failed"
+	}
+	_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", decisionType, result)
+	_ = s.audit.FinishStep(r.Context(), step.StepID, stepStatus)
 
 	if runErr != nil {
 		writeMappedErr(w, runErr, http.StatusBadGateway)

@@ -285,3 +285,56 @@ func (a *AuditService) ResolveApproval(ctx context.Context, approvalID, runID, s
 
 	return a.db.GetApproval(ctx, approvalID)
 }
+
+func (a *AuditService) StartStep(ctx context.Context, runID, name, stepType string) (*db.Step, error) {
+	now := time.Now().UTC()
+	step := &db.Step{
+		StepID:    uuid.New().String(),
+		RunID:     runID,
+		Name:      name,
+		Type:      stepType,
+		Status:    "running",
+		StartedAt: &now,
+		CreatedAt: now,
+	}
+	if err := a.db.InsertStep(ctx, step); err != nil {
+		return nil, err
+	}
+	return step, nil
+}
+
+func (a *AuditService) FinishStep(ctx context.Context, stepID, status string) error {
+	now := time.Now().UTC()
+	return a.db.UpdateStepStatus(ctx, stepID, status, &now)
+}
+
+func (a *AuditService) RecordDecision(ctx context.Context, runID string, stepID *string, actor, decisionType string, payload any) error {
+	var payloadArtifactID *string
+	if payload != nil {
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal decision payload: %w", err)
+		}
+		art, err := a.store.Save(ctx, SaveInput{
+			RunID:       runID,
+			Name:        "decision." + uuid.New().String() + ".payload.json",
+			ContentType: "application/json",
+			Body:        bytes.NewReader(payloadJSON),
+		})
+		if err != nil {
+			telemetry.IncArtifactWriteFailure()
+			return fmt.Errorf("save decision payload artifact: %w", err)
+		}
+		payloadArtifactID = &art.ArtifactID
+	}
+
+	return a.db.InsertDecision(ctx, &db.Decision{
+		DecisionID:        uuid.New().String(),
+		RunID:             runID,
+		StepID:            stepID,
+		Actor:             actor,
+		DecisionType:      decisionType,
+		PayloadArtifactID: payloadArtifactID,
+		CreatedAt:         time.Now().UTC(),
+	})
+}

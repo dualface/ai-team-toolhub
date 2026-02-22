@@ -308,6 +308,17 @@ func (d *DB) ListStepsByRun(ctx context.Context, runID string) ([]*Step, error) 
 	return out, rows.Err()
 }
 
+func (d *DB) UpdateStepStatus(ctx context.Context, stepID, status string, finishedAt *time.Time) error {
+	_, err := d.conn.ExecContext(ctx,
+		`UPDATE steps SET status = $2, finished_at = $3 WHERE step_id = $1`,
+		stepID, status, finishedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("update step status: %w", err)
+	}
+	return nil
+}
+
 type Decision struct {
 	DecisionID        string    `json:"decision_id"`
 	RunID             string    `json:"run_id"`

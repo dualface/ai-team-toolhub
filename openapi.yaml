@@ -389,6 +389,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/code/repair-loop:
+    post:
+      summary: Run controlled repair loop with QA retries and rollback on failure
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval_id, base_branch, head_branch, commit_message, pr_title, files]
+              properties:
+                approval_id:
+                  type: string
+                base_branch:
+                  type: string
+                head_branch:
+                  type: string
+                commit_message:
+                  type: string
+                pr_title:
+                  type: string
+                pr_body:
+                  type: string
+                max_iterations:
+                  type: integer
+                  minimum: 1
+                  maximum: 3
+                dry_run:
+                  type: boolean
+                files:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, modified_content]
+                    properties:
+                      path:
+                        type: string
+                      original_content:
+                        type: string
+                      modified_content:
+                        type: string
+      responses:
+        '200':
+          description: Tool response envelope containing repair-loop result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden by policy or approval gate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Run or approval not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/runs/{runID}/tool-calls:
     get:
       summary: List tool calls for run

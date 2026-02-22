@@ -169,6 +169,38 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.pull_request` (object, optional)
     - `result.patch_artifact_id` (string, optional)
 
+- `code_repair_loop`
+  - Input:
+    - `run_id` (string, required)
+    - `approval_id` (string, required)
+    - `base_branch` (string, required)
+    - `head_branch` (string, required)
+    - `commit_message` (string, required)
+    - `pr_title` (string, required)
+    - `pr_body` (string, optional)
+    - `max_iterations` (integer, optional, default 1, max 3)
+    - `files` (array, required)
+      - `path` (string, required)
+      - `original_content` (string, optional)
+      - `modified_content` (string, required)
+    - `dry_run` (boolean, optional)
+  - Output:
+    - `ok`
+    - `meta.run_id`
+    - `meta.tool_call_id`
+    - `meta.evidence_hash`
+    - `meta.dry_run`
+    - `result.base_branch`
+    - `result.head_branch`
+    - `result.status` (`completed|failed|dry_run`)
+    - `result.iterations_requested`
+    - `result.iterations_run`
+    - `result.qa_passed`
+    - `result.qa_attempts[]` (optional)
+    - `result.rollback_planned_commands[]` (optional)
+    - `result.commit_hash` (string, optional)
+    - `result.pull_request` (object, optional)
+
 ## Status Semantics
 
 ToolHub uses different status representations at different layers:
@@ -215,5 +247,8 @@ This is distinct from both audit status and batch status.
 - `github_pr_files_list` -> `github.pr.files.list`
 - `qa_test` -> `qa.test`
 - `qa_lint` -> `qa.lint`
+- `code_patch_generate` -> `code.patch.generate`
+- `code_branch_pr_create` -> `code.branch_pr.create`
+- `code_repair_loop` -> `code.repair_loop`
 
 These internal names are what `TOOL_ALLOWLIST` enforces server-side.

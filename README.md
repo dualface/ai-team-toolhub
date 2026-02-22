@@ -9,7 +9,9 @@ It exposes tools via HTTP and MCP, enforces server-side policy, and stores full 
 - Phase A.5 complete: `/version`, structured logs, dry-run, OpenAPI/MCP docs, CI smoke
 - Phase B complete: PR comment, PR read, PR files list
 - Phase C baseline complete: `qa.test` and `qa.lint` (configured commands, audited, dry-run)
-- Phase D (code change automation) intentionally not implemented
+- Phase D.1 complete: controlled patch generation (`code.patch.generate`)
+- Phase D.2 complete: controlled branch/commit/push/PR (`code.branch_pr.create`)
+- Phase D.3 complete: controlled repair loop with QA retry and rollback (`code.repair_loop`)
 
 ## Core Guarantees
 
@@ -54,6 +56,7 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 - `POST /api/v1/runs/{runID}/approvals/{approvalID}/reject`
 - `POST /api/v1/runs/{runID}/code/patch`
 - `POST /api/v1/runs/{runID}/code/branch-pr`
+- `POST /api/v1/runs/{runID}/code/repair-loop`
 - `GET /api/v1/runs/{runID}/tool-calls`
 - `GET /api/v1/runs/{runID}/artifacts`
 - `GET /api/v1/runs/{runID}/artifacts/{artifactID}`
@@ -86,6 +89,7 @@ Idempotency notes:
 - `qa_lint`
 - `code_patch_generate`
 - `code_branch_pr_create`
+- `code_repair_loop`
 
 See tool schemas in `docs/mcp-tools.md`.
 Generated MCP tool snapshot is in `docs/mcp-tools.generated.md`.

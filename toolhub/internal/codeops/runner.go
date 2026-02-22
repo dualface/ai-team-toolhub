@@ -40,6 +40,10 @@ type Result struct {
 	CommitHash      string   `json:"commit_hash,omitempty"`
 }
 
+type RollbackResult struct {
+	PlannedCommands []string `json:"planned_commands"`
+}
+
 func NewRunner(cfg Config) *Runner {
 	if strings.TrimSpace(cfg.WorkDir) == "" {
 		cfg.WorkDir = "."
@@ -129,6 +133,47 @@ func (r *Runner) Execute(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	return &Result{PlannedCommands: commands, CommitHash: strings.TrimSpace(out)}, nil
+}
+
+func (r *Runner) RollbackBranch(ctx context.Context, baseBranch, headBranch string, dryRun bool) (*RollbackResult, error) {
+	if err := validateBranch(baseBranch); err != nil {
+		return nil, err
+	}
+	if err := validateBranch(headBranch); err != nil {
+		return nil, err
+	}
+
+	absWD, err := filepath.Abs(r.cfg.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workdir: %w", err)
+	}
+
+	commands := []string{
+		fmt.Sprintf("git -C %q checkout %q", absWD, baseBranch),
+		fmt.Sprintf("git -C %q branch -D %q", absWD, headBranch),
+		fmt.Sprintf("git -C %q push %q --delete %q", absWD, r.cfg.Remote, headBranch),
+	}
+
+	if dryRun {
+		return &RollbackResult{PlannedCommands: commands}, nil
+	}
+
+	if err := runGit(ctx, absWD, "checkout", baseBranch); err != nil {
+		return nil, err
+	}
+
+	errMsgs := make([]string, 0, 2)
+	if err := runGit(ctx, absWD, "branch", "-D", headBranch); err != nil {
+		errMsgs = append(errMsgs, err.Error())
+	}
+	if err := runGit(ctx, absWD, "push", r.cfg.Remote, "--delete", headBranch); err != nil {
+		errMsgs = append(errMsgs, err.Error())
+	}
+	if len(errMsgs) > 0 {
+		return &RollbackResult{PlannedCommands: commands}, fmt.Errorf("rollback cleanup failed: %s", strings.Join(errMsgs, "; "))
+	}
+
+	return &RollbackResult{PlannedCommands: commands}, nil
 }
 
 func validateBranch(name string) error {

@@ -335,6 +335,37 @@ func ToolDefinitions() []map[string]any {
 				"required": []string{"run_id", "approval_id", "base_branch", "head_branch", "commit_message", "pr_title", "files"},
 			},
 		},
+		{
+			"name":        "code_repair_loop",
+			"description": "Run controlled repair loop: branch/commit, QA retries, rollback on QA failure, and PR on success",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":         map[string]string{"type": "string"},
+					"approval_id":    map[string]string{"type": "string"},
+					"base_branch":    map[string]string{"type": "string"},
+					"head_branch":    map[string]string{"type": "string"},
+					"commit_message": map[string]string{"type": "string"},
+					"pr_title":       map[string]string{"type": "string"},
+					"pr_body":        map[string]string{"type": "string"},
+					"max_iterations": map[string]string{"type": "integer"},
+					"dry_run":        map[string]string{"type": "boolean"},
+					"files": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"path":             map[string]string{"type": "string"},
+								"original_content": map[string]string{"type": "string"},
+								"modified_content": map[string]string{"type": "string"},
+							},
+							"required": []string{"path", "modified_content"},
+						},
+					},
+				},
+				"required": []string{"run_id", "approval_id", "base_branch", "head_branch", "commit_message", "pr_title", "files"},
+			},
+		},
 	}
 }
 
@@ -374,6 +405,8 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolCodePatchGenerate(ctx, params.Arguments, base)
 	case "code_branch_pr_create":
 		return s.toolCodeBranchPRCreate(ctx, params.Arguments, base)
+	case "code_repair_loop":
+		return s.toolCodeRepairLoop(ctx, params.Arguments, base)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -689,6 +722,19 @@ type codeBranchPRArgs struct {
 	DryRun        bool                 `json:"dry_run,omitempty"`
 }
 
+type codeRepairLoopArgs struct {
+	RunID         string               `json:"run_id"`
+	ApprovalID    string               `json:"approval_id"`
+	BaseBranch    string               `json:"base_branch"`
+	HeadBranch    string               `json:"head_branch"`
+	CommitMessage string               `json:"commit_message"`
+	PRTitle       string               `json:"pr_title"`
+	PRBody        string               `json:"pr_body,omitempty"`
+	Files         []codeops.FileChange `json:"files"`
+	MaxIterations int                  `json:"max_iterations,omitempty"`
+	DryRun        bool                 `json:"dry_run,omitempty"`
+}
+
 func (s *Server) toolCodePatchGenerate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
 	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
 
@@ -877,6 +923,214 @@ func (s *Server) toolCodeBranchPRCreate(ctx context.Context, raw json.RawMessage
 		"run_id", args.RunID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", "code.branch_pr.create",
+		"repo", run.Repo,
+	)
+
+	if runErr != nil {
+		mapped := core.MapError(runErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
+		return base
+	}
+
+	base.Result = core.ToolEnvelope{
+		OK:     true,
+		Meta:   core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun},
+		Result: result,
+	}
+	return base
+}
+
+func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
+	var args codeRepairLoopArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if strings.TrimSpace(args.RunID) == "" || strings.TrimSpace(args.ApprovalID) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "run_id and approval_id are required"}
+		return base
+	}
+	if args.MaxIterations <= 0 {
+		args.MaxIterations = 1
+	}
+	if args.MaxIterations > 3 {
+		base.Error = &rpcError{Code: -32602, Message: "max_iterations cannot exceed 3"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("code.repair_loop"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if s.code == nil {
+		base.Error = &rpcError{Code: -32603, Message: "code runner is not configured"}
+		return base
+	}
+	if s.qa == nil {
+		base.Error = &rpcError{Code: -32603, Message: "qa runner is not configured"}
+		return base
+	}
+
+	approval, err := s.audit.GetApproval(ctx, args.ApprovalID)
+	if err != nil {
+		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		return base
+	}
+	if approval == nil || approval.RunID != args.RunID {
+		base.Error = &rpcError{Code: -32602, Message: "approval not found"}
+		return base
+	}
+	if approval.Status != "approved" {
+		base.Error = &rpcError{Code: -32602, Message: "approval is not approved"}
+		return base
+	}
+
+	paths := make([]string, 0, len(args.Files))
+	for _, f := range args.Files {
+		paths = append(paths, f.Path)
+	}
+	if err := s.policy.CheckPaths(paths); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+
+	step, err := s.audit.StartStep(ctx, args.RunID, "code_repair_loop", "repair_loop")
+	if err != nil {
+		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		return base
+	}
+	_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": args.MaxIterations})
+
+	codeResult, runErr := s.code.Execute(ctx, codeops.Request{
+		BaseBranch:    args.BaseBranch,
+		HeadBranch:    args.HeadBranch,
+		CommitMessage: args.CommitMessage,
+		Files:         args.Files,
+		DryRun:        args.DryRun,
+	})
+	if codeResult == nil {
+		codeResult = &codeops.Result{}
+	}
+
+	iterationsRun := 0
+	qaPassed := false
+	qaAttempts := make([]map[string]any, 0, args.MaxIterations)
+
+	result := map[string]any{
+		"iterations_requested": args.MaxIterations,
+		"iterations_run":       iterationsRun,
+		"base_branch":          args.BaseBranch,
+		"head_branch":          args.HeadBranch,
+		"planned_commands":     codeResult.PlannedCommands,
+		"commit_hash":          codeResult.CommitHash,
+		"qa_passed":            qaPassed,
+		"status":               "completed",
+	}
+
+	if runErr == nil && !args.DryRun {
+		for i := 1; i <= args.MaxIterations; i++ {
+			iterationsRun = i
+
+			testReport, testErr := s.qa.Run(ctx, qa.KindTest, false)
+			lintReport, lintErr := s.qa.Run(ctx, qa.KindLint, false)
+
+			attempt := map[string]any{
+				"iteration":   i,
+				"test_status": string(qa.DeriveStatus(testReport, testErr, false)),
+				"lint_status": string(qa.DeriveStatus(lintReport, lintErr, false)),
+				"test_report": testReport,
+				"lint_report": lintReport,
+			}
+			if testErr != nil {
+				attempt["test_error"] = testErr.Error()
+			}
+			if lintErr != nil {
+				attempt["lint_error"] = lintErr.Error()
+			}
+			qaAttempts = append(qaAttempts, attempt)
+			_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_iteration", attempt)
+
+			if testErr == nil && lintErr == nil {
+				qaPassed = true
+				break
+			}
+		}
+
+		if !qaPassed {
+			result["status"] = "failed"
+			result["qa_failure_reason"] = fmt.Sprintf("qa checks failed after %d iteration(s)", iterationsRun)
+
+			rollback, rollbackErr := s.code.RollbackBranch(ctx, args.BaseBranch, args.HeadBranch, false)
+			if rollback != nil {
+				result["rollback_planned_commands"] = rollback.PlannedCommands
+			}
+			if rollbackErr != nil {
+				result["rollback_error"] = rollbackErr.Error()
+			}
+			runErr = fmt.Errorf("qa checks failed")
+		}
+	}
+
+	result["iterations_run"] = iterationsRun
+	result["qa_passed"] = qaPassed
+	if len(qaAttempts) > 0 {
+		result["qa_attempts"] = qaAttempts
+	}
+
+	if runErr == nil && !args.DryRun && qaPassed {
+		owner, repo := splitRepo(run.Repo)
+		pr, prErr := s.gh.CreatePullRequest(ctx, owner, repo, gh.CreatePullRequestInput{
+			Title: args.PRTitle,
+			Head:  args.HeadBranch,
+			Base:  args.BaseBranch,
+			Body:  args.PRBody,
+		})
+		if prErr != nil {
+			runErr = prErr
+		} else {
+			result["pull_request"] = pr
+		}
+	}
+
+	if runErr != nil {
+		result["status"] = "failed"
+	} else if args.DryRun {
+		result["status"] = "dry_run"
+	}
+
+	tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID:    args.RunID,
+		ToolName: "code.repair_loop",
+		Request:  args,
+		Response: result,
+		Err:      runErr,
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	decisionType := "repair_loop_completed"
+	stepStatus := "completed"
+	if runErr != nil {
+		decisionType = "repair_loop_failed"
+		stepStatus = "failed"
+	}
+	_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", decisionType, result)
+	_ = s.audit.FinishStep(ctx, step.StepID, stepStatus)
+
+	s.logger.Info("tool call completed",
+		"trace_id", traceID,
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "code.repair_loop",
 		"repo", run.Repo,
 	)
 

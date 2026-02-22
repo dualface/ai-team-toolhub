@@ -78,3 +78,17 @@ This file is generated from `toolhub/internal/mcp/server.go`.
     - `pr_title` (required)
     - `run_id` (required)
 
+- `code_repair_loop`
+  - Description: Run controlled repair loop: branch/commit, QA retries, rollback on QA failure, and PR on success
+  - Input:
+    - `approval_id` (required)
+    - `base_branch` (required)
+    - `commit_message` (required)
+    - `dry_run` (optional)
+    - `files` (required)
+    - `head_branch` (required)
+    - `max_iterations` (optional)
+    - `pr_body` (optional)
+    - `pr_title` (required)
+    - `run_id` (required)
+
