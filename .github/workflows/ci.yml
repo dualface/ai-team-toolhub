@@ -42,6 +42,9 @@ jobs:
           go -C toolhub run ./cmd/mcpdocgen > docs/mcp-tools.generated.md
           git diff --exit-code docs/mcp-tools.generated.md
 
+      - name: Doc drift guardrails
+        run: go -C toolhub test -run 'TestDocDrift' -count=1 ./internal/core/
+
       - name: Build
         run: make build
 
