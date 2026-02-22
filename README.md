@@ -149,6 +149,11 @@ Reference defaults are in `.env.example`.
 - Migration files live in `toolhub/internal/db/migrations/` and run in filename order.
 - `db/init/` remains available for first-time PostgreSQL bootstrap in Docker.
 
+## Sandbox PoC
+
+- Internal QA sandbox PoC is documented in `docs/D1_SANDBOX_POC.md`.
+- Current release keeps local runner as default and does not expose sandbox as external API yet.
+
 ## Security
 
 - GitHub App only (no PAT)
