@@ -380,11 +380,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Forbidden by policy or approval gate
+          description: >
+            Forbidden by policy or approval gate. D-flow path policy violations
+            return a ToolEnvelope with error.code set to a PolicyViolationCode
+            (path_policy_forbidden, path_policy_traversal, path_policy_empty).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ToolEnvelope'
         '404':
           description: Run or approval not found
           content:
@@ -452,11 +455,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '403':
-          description: Forbidden by policy or approval gate
+          description: >
+            Forbidden by policy or approval gate. D-flow path policy violations
+            return a ToolEnvelope with error.code set to a PolicyViolationCode
+            (path_policy_forbidden, path_policy_traversal, path_policy_empty).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: '#/components/schemas/ToolEnvelope'
         '404':
           description: Run or approval not found
           content:
@@ -1024,5 +1030,66 @@ components:
       properties:
         code:
           type: string
+          description: >
+            Error code. For path policy violations this is one of:
+            path_policy_forbidden, path_policy_approval_required,
+            path_policy_traversal, path_policy_empty.
         message:
+          type: string
+    PolicyViolation:
+      description: Structured path-policy violation returned by D-flow endpoints.
+      type: object
+      properties:
+        code:
+          type: string
+          enum:
+            - path_policy_forbidden
+            - path_policy_approval_required
+            - path_policy_traversal
+            - path_policy_empty
+        path:
+          type: string
+        reason:
+          type: string
+    RepairLoopResult:
+      description: Result of a code.repair_loop execution.
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [completed, failed, dry_run]
+        iterations_requested:
+          type: integer
+        iterations_run:
+          type: integer
+        qa_passed:
+          type: boolean
+        qa_failure_reason:
+          type: string
+          description: Human-readable failure summary (present when status=failed).
+        qa_failure_category:
+          type: string
+          enum: [test_failure, lint_failure, both_failure, qa_timeout, qa_error]
+          description: >
+            Categorized failure reason for the last QA iteration.
+            Present when QA checks failed. Also recorded in audit decision data.
+        qa_attempts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        base_branch:
+          type: string
+        head_branch:
+          type: string
+        commit_hash:
+          type: string
+        pull_request:
+          type: object
+          additionalProperties: true
+        rollback_planned_commands:
+          type: array
+          items:
+            type: string
+        rollback_error:
           type: string

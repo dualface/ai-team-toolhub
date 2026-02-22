@@ -159,6 +159,7 @@ Path policy notes:
 
 - `PATH_POLICY_FORBIDDEN_PREFIXES`: paths that are always blocked by policy checks.
 - `PATH_POLICY_APPROVAL_PREFIXES`: paths that require `scope=path_change` when creating manual approval requests.
+- Detailed defaults and rationale: `docs/PATH_POLICY.md`.
 
 Reference defaults are in `.env.example`.
 

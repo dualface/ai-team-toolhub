@@ -202,10 +202,17 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.iterations_requested`
     - `result.iterations_run`
     - `result.qa_passed`
+    - `result.qa_failure_reason` (string, optional — present when status=failed)
+    - `result.qa_failure_category` (string, optional — `test_failure|lint_failure|both_failure|qa_timeout|qa_error`)
     - `result.qa_attempts[]` (optional)
     - `result.rollback_planned_commands[]` (optional)
+    - `result.rollback_error` (string, optional)
     - `result.commit_hash` (string, optional)
     - `result.pull_request` (object, optional)
+
+  Policy violations on file paths return structured errors:
+    - `error.code`: `path_policy_forbidden|path_policy_traversal|path_policy_empty`
+    - `error.message`: human-readable description including violating path
 
 ## Status Semantics
 
