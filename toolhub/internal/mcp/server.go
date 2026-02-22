@@ -1367,7 +1367,7 @@ func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base 
 		return base
 	}
 
-	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files)}}
+	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files), "summary": gh.SummarizePRFiles(files)}}
 	return base
 }
 
@@ -1477,8 +1477,9 @@ func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCRe
 		OK:   runErr == nil,
 		Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun, QAArtifacts: qaArtifacts},
 		Result: map[string]any{
-			"status": string(status),
-			"report": report,
+			"status":  string(status),
+			"report":  report,
+			"summary": qa.GenerateSummary(status, report),
 		},
 		Error: func() *core.ToolError {
 			if runErr == nil {

@@ -595,7 +595,9 @@ paths:
                   type: boolean
       responses:
         '200':
-          description: Tool response envelope
+          description: >
+            Tool response envelope. result.summary provides aggregate file change
+            statistics.
           headers:
             Idempotency-Replayed:
               description: true when response was served from an idempotent replay.
@@ -796,6 +798,8 @@ paths:
           description: >
             Tool response envelope. The result field contains a QAResult
             with status (pass|fail|timeout|error|dry_run) and report.
+            result.summary provides a human-readable one-line summary of the QA
+            outcome.
           content:
             application/json:
               schema:
@@ -829,6 +833,8 @@ paths:
           description: >
             Tool response envelope. The result field contains a QAResult
             with status (pass|fail|timeout|error|dry_run) and report.
+            result.summary provides a human-readable one-line summary of the QA
+            outcome.
           content:
             application/json:
               schema:
@@ -1001,6 +1007,9 @@ components:
             dry_run: dry-run mode, command was not executed.
         report:
           $ref: '#/components/schemas/QAReport'
+        summary:
+          type: string
+          description: Human-readable one-line QA outcome summary.
     QAArtifacts:
       type: object
       properties:

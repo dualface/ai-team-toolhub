@@ -108,6 +108,23 @@ func DeriveStatus(report Report, err error, dryRun bool) Status {
 	return StatusError
 }
 
+func GenerateSummary(status Status, report Report) string {
+	switch status {
+	case StatusPass:
+		return fmt.Sprintf("passed (exit_code=0, %dms)", report.DurationMS)
+	case StatusFail:
+		return fmt.Sprintf("failed (exit_code=%d, %dms)", report.ExitCode, report.DurationMS)
+	case StatusTimeout:
+		return fmt.Sprintf("timed out after %dms", report.DurationMS)
+	case StatusError:
+		return fmt.Sprintf("error (exit_code=%d)", report.ExitCode)
+	case StatusDryRun:
+		return "dry run (no execution)"
+	default:
+		return string(status)
+	}
+}
+
 type Runner struct {
 	cfg                Config
 	allowedExecutables map[string]bool

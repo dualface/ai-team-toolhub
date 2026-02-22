@@ -77,6 +77,10 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `meta.evidence_hash`
     - `result.files[]`
     - `result.count`
+    - `result.summary.total_files` (integer)
+    - `result.summary.total_additions` (integer)
+    - `result.summary.total_deletions` (integer)
+    - `result.summary.total_changes` (integer)
 
 - `qa_test`
   - Input:
@@ -100,6 +104,7 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.report.stderr` (string)
     - `result.report.stdout_truncated` (boolean)
     - `result.report.stderr_truncated` (boolean)
+    - `result.summary` (string, one-line outcome description)
 
 - `qa_lint`
   - Input:
@@ -123,6 +128,7 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.report.stderr` (string)
     - `result.report.stdout_truncated` (boolean)
     - `result.report.stderr_truncated` (boolean)
+    - `result.summary` (string, one-line outcome description)
 
 - `code_patch_generate`
   - Input:

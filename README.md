@@ -112,6 +112,8 @@ Useful flags:
 - `SMOKE_AUTO_START=0`: run against already-running services
 - `SMOKE_PR_NUMBER=<num>`: force a specific PR for PR read checks
 
+For troubleshooting local smoke runs, see `docs/LOCAL_SMOKE_RUNBOOK.md`.
+
 ## CI
 
 Workflow: `.github/workflows/ci.yml`

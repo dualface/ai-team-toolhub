@@ -264,6 +264,23 @@ type PullRequestFile struct {
 	PreviousFilename string `json:"previous_filename,omitempty"`
 }
 
+func SummarizePRFiles(files []PullRequestFile) map[string]any {
+	totalAdditions := 0
+	totalDeletions := 0
+	totalChanges := 0
+	for _, f := range files {
+		totalAdditions += f.Additions
+		totalDeletions += f.Deletions
+		totalChanges += f.Changes
+	}
+	return map[string]any{
+		"total_files":     len(files),
+		"total_additions": totalAdditions,
+		"total_deletions": totalDeletions,
+		"total_changes":   totalChanges,
+	}
+}
+
 type APIError struct {
 	Operation  string
 	StatusCode int

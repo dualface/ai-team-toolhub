@@ -1026,7 +1026,7 @@ func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) 
 			DryRun:       body.DryRun,
 			QAArtifacts:  qaArtifacts,
 		},
-		Result: map[string]any{"status": string(status), "report": report},
+		Result: map[string]any{"status": string(status), "report": report, "summary": qa.GenerateSummary(status, report)},
 		Error: func() *core.ToolError {
 			if runErr == nil {
 				return nil
@@ -1166,7 +1166,7 @@ func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
 			EvidenceHash: tc.EvidenceHash,
 			DryRun:       false,
 		},
-		Result: map[string]any{"files": files, "count": len(files)},
+		Result: map[string]any{"files": files, "count": len(files), "summary": gh.SummarizePRFiles(files)},
 	})
 }
 
