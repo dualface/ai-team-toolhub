@@ -25,6 +25,7 @@ Priorities:
 - Never log tokens, private keys, or auth headers.
 - Never introduce PAT-based auth; GitHub App is required.
 - Never relax allowlist enforcement for convenience.
+- Never weaken built-in hardened forbidden path prefixes (`.github/`, `.git/`, `secrets/`, `.env`).
 - For QA tools, do not accept arbitrary user-provided shell commands.
   - Commands are server-configured env vars.
   - Enforce timeout and controlled workdir.
@@ -65,7 +66,12 @@ For DB/audit integration checks, provide `TOOLHUB_TEST_DATABASE_URL` when needed
   - `toolhub/internal/mcp/server.go`
   - `toolhub/internal/core/audit.go`
   - `toolhub/internal/core/policy.go`
+  - `toolhub/internal/core/policy_violation.go` (structured policy violation codes)
+  - `toolhub/internal/core/profile.go` (environment profile defaults)
+  - `toolhub/internal/core/envelope.go` (response envelope with ToolError)
+  - `toolhub/internal/telemetry/metrics.go` (repair-loop observability)
 - Prefer additive changes over broad rewrites.
+- Doc drift tests (`TestDocDrift_*`) enforce that env vars, HTTP endpoints, and MCP tools stay in sync with docs. Run with `go -C toolhub test ./...` (they fail CI if docs drift).
 
 ## Operational Boundaries
 
@@ -76,3 +82,4 @@ For DB/audit integration checks, provide `TOOLHUB_TEST_DATABASE_URL` when needed
 - Do not add arbitrary shell execution endpoints.
 - Do not add automatic merge capabilities; current scope ends at PR creation.
 - Do not add force-push or bypass mechanisms that weaken approval/policy/audit controls.
+- Environment profiles (`TOOLHUB_PROFILE`) set safe defaults per environment; explicit env vars always override profile defaults.

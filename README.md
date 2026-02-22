@@ -12,6 +12,8 @@ It exposes tools via HTTP and MCP, enforces server-side policy, and stores full 
 - Phase D.1 complete: controlled patch generation (`code.patch.generate`)
 - Phase D.2 complete: controlled branch/commit/push/PR (`code.branch_pr.create`)
 - Phase D.3 complete: controlled repair loop with QA retry and rollback (`code.repair_loop`)
+- Hardening P1 complete: path-policy built-in forbidden prefixes, structured `PolicyViolation` responses, repair-loop observability metrics
+- Hardening P2 complete: environment profiles (`TOOLHUB_PROFILE`), doc drift guardrails (CI-enforced)
 
 ## Core Guarantees
 
@@ -191,8 +193,11 @@ Reference defaults are in `.env.example`.
 - GitHub App only (no PAT)
 - private key mounted read-only
 - tokens and secrets must never be logged
+- built-in hardened forbidden path prefixes (`.github/`, `.git/`, `secrets/`, `.env`) cannot be removed by env config
+- structured `PolicyViolation` error codes for path policy enforcement (`path_policy_forbidden`, `path_policy_traversal`, etc.)
 - repository write tools are controlled and audited (`code.branch_pr.create`, `code.repair_loop`)
 - repository write actions require approval gates and do not auto-merge PRs
+- repair-loop observability: iteration, QA result, completion, and rollback metrics with failure categorization
 
 ## License
 
