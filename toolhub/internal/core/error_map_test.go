@@ -47,6 +47,7 @@ func TestMapErrorQACodedErrors(t *testing.T) {
 	}{
 		{name: "qa command empty", err: &testCodedError{code: "qa_command_empty", msg: "qa command is empty"}, fallback: 500, wantCode: "qa_command_empty", wantHTTP: 400},
 		{name: "qa command not allowed", err: &testCodedError{code: "qa_command_not_allowed", msg: "qa executable \"foo\" is not in allowlist"}, fallback: 500, wantCode: "qa_command_not_allowed", wantHTTP: 403},
+		{name: "qa backend invalid", err: &testCodedError{code: "qa_backend_invalid", msg: "unsupported qa backend: nope"}, fallback: 500, wantCode: "qa_backend_invalid", wantHTTP: 400},
 		{name: "qa timeout", err: &testCodedError{code: "qa_timeout", msg: "qa command timed out after 5s"}, fallback: 500, wantCode: "qa_timeout", wantHTTP: 200},
 		{name: "qa exec failed", err: &testCodedError{code: "qa_execution_failed", msg: "qa command failed with exit code 1"}, fallback: 500, wantCode: "qa_execution_failed", wantHTTP: 200},
 		{name: "idempotency conflict", err: &testCodedError{code: "idempotency_key_conflict", msg: "idempotency key reused with different request payload"}, fallback: 500, wantCode: "idempotency_key_conflict", wantHTTP: 409},

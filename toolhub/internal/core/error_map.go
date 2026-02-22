@@ -29,7 +29,7 @@ func MapError(err error, fallbackStatus int) ErrorInfo {
 	if errors.As(err, &coded) {
 		code := coded.ErrorCode()
 		switch code {
-		case "qa_command_empty", "qa_command_invalid", "qa_workdir_invalid", "qa_tool_unsupported":
+		case "qa_command_empty", "qa_command_invalid", "qa_workdir_invalid", "qa_tool_unsupported", "qa_backend_invalid":
 			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 400}
 		case "qa_command_not_allowed":
 			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 403}

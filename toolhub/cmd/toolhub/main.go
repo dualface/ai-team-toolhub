@@ -101,6 +101,10 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	qaBackend := strings.TrimSpace(envOrDefault("QA_BACKEND", "local"))
+	qaSandboxImage := strings.TrimSpace(envOrDefault("QA_SANDBOX_IMAGE", "golang:1.25"))
+	qaSandboxDockerBin := strings.TrimSpace(envOrDefault("QA_SANDBOX_DOCKER_BIN", "docker"))
+	qaSandboxContainerWD := strings.TrimSpace(envOrDefault("QA_SANDBOX_CONTAINER_WORKDIR", "/workspace"))
 	qaRunner, err := qa.NewRunner(qa.Config{
 		WorkDir:            envOrDefault("QA_WORKDIR", "."),
 		TestCmd:            envOrDefault("QA_TEST_CMD", "go -C toolhub test ./..."),
@@ -108,6 +112,10 @@ func main() {
 		Timeout:            qaTimeout,
 		MaxOutputBytes:     qaMaxOutputBytes,
 		MaxConcurrency:     qaMaxConcurrency,
+		Backend:            qaBackend,
+		SandboxImage:       qaSandboxImage,
+		SandboxDockerBin:   qaSandboxDockerBin,
+		SandboxContainerWD: qaSandboxContainerWD,
 		AllowedExecutables: qaAllowedExecutables,
 	})
 	if err != nil {

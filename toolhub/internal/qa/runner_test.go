@@ -25,6 +25,20 @@ func TestRunnerDryRun(t *testing.T) {
 	}
 }
 
+func TestRunnerDryRunSandboxBackend(t *testing.T) {
+	r, err := NewRunner(Config{WorkDir: ".", TestCmd: "go test ./...", LintCmd: "go test ./...", Timeout: 5 * time.Second, Backend: "sandbox", AllowedExecutables: []string{"go"}})
+	if err != nil {
+		t.Fatalf("new runner should not fail: %v", err)
+	}
+	report, err := r.Run(context.Background(), KindTest, true)
+	if err != nil {
+		t.Fatalf("dry run should not fail: %v", err)
+	}
+	if report.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", report.ExitCode)
+	}
+}
+
 func TestRunnerFailureExitCode(t *testing.T) {
 	r, err := NewRunner(Config{WorkDir: ".", TestCmd: "go test ./nonexistent", LintCmd: "go test ./...", Timeout: 15 * time.Second})
 	if err != nil {
@@ -164,6 +178,13 @@ func TestNewRunnerValidation(t *testing.T) {
 			wantErr:   true,
 			wantCode:  ErrCodeCommandEmpty,
 			errSubstr: "qa command is empty",
+		},
+		{
+			name:      "invalid_backend",
+			cfg:       Config{WorkDir: ".", TestCmd: "go test ./...", LintCmd: "go test ./...", AllowedExecutables: []string{"go"}, Backend: "bad_backend"},
+			wantErr:   true,
+			wantCode:  ErrCodeBackendInvalid,
+			errSubstr: "unsupported qa backend",
 		},
 	}
 

@@ -28,6 +28,10 @@ type Config struct {
 	Timeout            time.Duration
 	MaxOutputBytes     int
 	MaxConcurrency     int
+	Backend            string
+	SandboxImage       string
+	SandboxDockerBin   string
+	SandboxContainerWD string
 	AllowedExecutables []string
 }
 
@@ -63,6 +67,7 @@ const (
 	ErrCodeTimeout             = "qa_timeout"
 	ErrCodeExecFailed          = "qa_execution_failed"
 	ErrCodeConcurrencyExceeded = "qa_concurrency_exceeded"
+	ErrCodeBackendInvalid      = "qa_backend_invalid"
 )
 
 // QAError represents a typed QA error with a machine-readable code.
@@ -107,6 +112,7 @@ type Runner struct {
 	cfg                Config
 	allowedExecutables map[string]bool
 	semaphore          chan struct{}
+	sandbox            *SandboxRunner
 }
 
 func NewRunner(cfg Config) (*Runner, error) {
@@ -128,6 +134,12 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 2
 	}
+	if strings.TrimSpace(cfg.Backend) == "" {
+		cfg.Backend = "local"
+	}
+	if cfg.Backend != "local" && cfg.Backend != "sandbox" {
+		return nil, &QAError{ErrCode: ErrCodeBackendInvalid, Detail: fmt.Sprintf("unsupported qa backend: %s", cfg.Backend)}
+	}
 	if len(cfg.AllowedExecutables) == 0 {
 		cfg.AllowedExecutables = []string{
 			"go", "make", "pytest", "python", "python3", "npm", "npx", "yarn", "pnpm", "ruff", "eslint", "golangci-lint",
@@ -146,7 +158,17 @@ func NewRunner(cfg Config) (*Runner, error) {
 	if err := validateConfiguredCommand(cfg.LintCmd, allowed); err != nil {
 		return nil, err
 	}
-	return &Runner{cfg: cfg, allowedExecutables: allowed, semaphore: make(chan struct{}, cfg.MaxConcurrency)}, nil
+	runner := &Runner{cfg: cfg, allowedExecutables: allowed, semaphore: make(chan struct{}, cfg.MaxConcurrency)}
+	if cfg.Backend == "sandbox" {
+		runner.sandbox = NewSandboxRunner(SandboxConfig{
+			Image:            cfg.SandboxImage,
+			DockerBinary:     cfg.SandboxDockerBin,
+			ContainerWorkDir: cfg.SandboxContainerWD,
+			Timeout:          cfg.Timeout,
+			MaxOutputBytes:   cfg.MaxOutputBytes,
+		})
+	}
+	return runner, nil
 }
 
 func validateConfiguredCommand(cmdline string, allowedExecutables map[string]bool) error {
@@ -198,6 +220,22 @@ func (r *Runner) Run(ctx context.Context, kind Kind, dryRun bool) (Report, error
 
 	if dryRun {
 		return Report{Command: cmdline, WorkDir: wd, ExitCode: 0, OutputLimitBytes: r.cfg.MaxOutputBytes}, nil
+	}
+
+	if r.cfg.Backend == "sandbox" {
+		return r.sandbox.RunCommand(ctx, cmdline, wd, false)
+	}
+
+	return r.runLocal(ctx, cmdline, wd)
+}
+
+func (r *Runner) runLocal(ctx context.Context, cmdline, wd string) (Report, error) {
+	args, err := splitCommandLine(cmdline)
+	if err != nil {
+		return Report{}, err
+	}
+	if len(args) == 0 {
+		return Report{}, &QAError{ErrCode: ErrCodeCommandEmpty, Detail: "qa command is empty"}
 	}
 
 	execCtx, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
