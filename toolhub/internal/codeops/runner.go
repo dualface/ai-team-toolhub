@@ -84,7 +84,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (*Result, error) {
 			return nil, err
 		}
 		commands = append(commands, fmt.Sprintf("write %q", cleanPath))
-		commands = append(commands, fmt.Sprintf("git -C %q add %q", absWD, cleanPath))
+		commands = append(commands, fmt.Sprintf("git -C %q add -- %q", absWD, cleanPath))
 	}
 
 	commands = append(commands,
@@ -115,7 +115,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (*Result, error) {
 		if err := os.WriteFile(full, []byte(f.ModifiedContent), 0o644); err != nil {
 			return nil, fmt.Errorf("write file %q: %w", cleanPath, err)
 		}
-		if err := runGit(ctx, absWD, "add", cleanPath); err != nil {
+		if err := runGit(ctx, absWD, "add", "--", cleanPath); err != nil {
 			return nil, err
 		}
 	}
@@ -196,9 +196,15 @@ func safeRelativePath(path string) (string, error) {
 	if strings.HasPrefix(trimmed, "/") {
 		return "", fmt.Errorf("absolute file path is not allowed: %q", path)
 	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", fmt.Errorf("file path must not start with dash: %q", path)
+	}
 	cleaned := filepath.Clean(trimmed)
 	if cleaned == "." || strings.HasPrefix(cleaned, "..") {
 		return "", fmt.Errorf("unsafe file path: %q", path)
+	}
+	if strings.HasPrefix(cleaned, "-") {
+		return "", fmt.Errorf("file path must not start with dash: %q", path)
 	}
 	return cleaned, nil
 }

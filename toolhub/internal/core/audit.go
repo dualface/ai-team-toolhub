@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -203,6 +204,12 @@ func (a *AuditService) ListArtifactsByRun(ctx context.Context, runID string) ([]
 // GetArtifactByRunAndID returns artifact metadata scoped to a run.
 func (a *AuditService) GetArtifactByRunAndID(ctx context.Context, runID, artifactID string) (*db.Artifact, error) {
 	return a.store.GetByRunAndID(ctx, runID, artifactID)
+}
+
+// ReadArtifactContent opens an artifact file safely by deriving the path from
+// the artifact store's base directory rather than trusting the DB-stored URI.
+func (a *AuditService) ReadArtifactContent(ctx context.Context, runID, artifactID string) (*os.File, *db.Artifact, error) {
+	return a.store.ReadContentByRunAndID(ctx, runID, artifactID)
 }
 
 func (a *AuditService) CreateApproval(ctx context.Context, runID, scope string, payload any) (*db.Approval, error) {

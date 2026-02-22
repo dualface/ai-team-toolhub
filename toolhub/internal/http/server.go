@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -407,25 +406,13 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	art, err := s.audit.GetArtifactByRunAndID(r.Context(), runID, artifactID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if art == nil {
-		writeErr(w, http.StatusNotFound, "artifact not found")
-		return
-	}
-
-	if !strings.HasPrefix(art.URI, "file://") {
-		writeErr(w, http.StatusInternalServerError, "unsupported artifact uri")
-		return
-	}
-
-	path := strings.TrimPrefix(art.URI, "file://")
-	f, err := os.Open(path)
+	f, art, err := s.audit.ReadArtifactContent(r.Context(), runID, artifactID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "read artifact file failed")
+		return
+	}
+	if f == nil {
+		writeErr(w, http.StatusNotFound, "artifact not found")
 		return
 	}
 	defer f.Close()
@@ -618,6 +605,10 @@ func (s *Server) handleCodeBranchPR(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "approval is not approved")
 		return
 	}
+	if approval.Scope != "code_write" {
+		writeErr(w, http.StatusForbidden, "approval scope must be code_write")
+		return
+	}
 
 	paths := make([]string, 0, len(body.Files))
 	for _, f := range body.Files {
@@ -754,6 +745,10 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "approval is not approved")
 		return
 	}
+	if approval.Scope != "code_write" {
+		writeErr(w, http.StatusForbidden, "approval scope must be code_write")
+		return
+	}
 
 	paths := make([]string, 0, len(body.Files))
 	for _, f := range body.Files {
@@ -769,7 +764,9 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": body.MaxIterations})
+	if err := s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": body.MaxIterations}); err != nil {
+		s.logger.Error("audit record decision failed", "err", err, "run_id", runID, "decision_type", "repair_loop_started")
+	}
 
 	codeResult, runErr := s.code.Execute(r.Context(), codeops.Request{
 		BaseBranch:    body.BaseBranch,
@@ -818,7 +815,9 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 				attempt["lint_error"] = lintErr.Error()
 			}
 			qaAttempts = append(qaAttempts, attempt)
-			_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_iteration", attempt)
+			if err := s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", "repair_loop_iteration", attempt); err != nil {
+				s.logger.Error("audit record decision failed", "err", err, "run_id", runID, "decision_type", "repair_loop_iteration")
+			}
 
 			if testErr == nil && lintErr == nil {
 				qaPassed = true
@@ -886,8 +885,12 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 		decisionType = "repair_loop_failed"
 		stepStatus = "failed"
 	}
-	_ = s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", decisionType, result)
-	_ = s.audit.FinishStep(r.Context(), step.StepID, stepStatus)
+	if err := s.audit.RecordDecision(r.Context(), runID, &step.StepID, "system", decisionType, result); err != nil {
+		s.logger.Error("audit record decision failed", "err", err, "run_id", runID, "decision_type", decisionType)
+	}
+	if err := s.audit.FinishStep(r.Context(), step.StepID, stepStatus); err != nil {
+		s.logger.Error("audit finish step failed", "err", err, "run_id", runID, "step_id", step.StepID)
+	}
 
 	if runErr != nil {
 		writeMappedErr(w, runErr, http.StatusBadGateway)
@@ -1183,6 +1186,11 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.policy.CheckTool("github.issues.create"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
 	var body createIssueBody
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -1349,6 +1357,11 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if err := s.policy.CheckTool("github.issues.batch_create"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
 	var body batchCreateBody
 	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -1511,6 +1524,11 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if run == nil {
 		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	if err := s.policy.CheckTool("github.pr.comment.create"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
 

@@ -104,13 +104,45 @@ func (s *ArtifactStore) Read(ctx context.Context, artifactID string) ([]byte, er
 	if art == nil {
 		return nil, fmt.Errorf("artifact not found: %s", artifactID)
 	}
-	if !strings.HasPrefix(art.URI, "file://") {
-		return nil, fmt.Errorf("unsupported artifact URI: %s", art.URI)
+	safePath, err := s.safePath(art.RunID, artifactID)
+	if err != nil {
+		return nil, err
 	}
-	path := strings.TrimPrefix(art.URI, "file://")
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(safePath)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact file: %w", err)
 	}
 	return b, nil
+}
+
+// ReadContentByRunAndID opens an artifact file for streaming, deriving the path
+// from baseDir rather than trusting the DB-stored URI.
+func (s *ArtifactStore) ReadContentByRunAndID(ctx context.Context, runID, artifactID string) (*os.File, *db.Artifact, error) {
+	art, err := s.db.GetArtifactByRunAndID(ctx, runID, artifactID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if art == nil {
+		return nil, nil, nil
+	}
+	safePath, err := s.safePath(runID, artifactID)
+	if err != nil {
+		return nil, nil, err
+	}
+	f, err := os.Open(safePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open artifact file: %w", err)
+	}
+	return f, art, nil
+}
+
+// safePath constructs the expected artifact file path from baseDir, runID, and
+// artifactID, then validates no path traversal has occurred.
+func (s *ArtifactStore) safePath(runID, artifactID string) (string, error) {
+	p := filepath.Join(s.baseDir, runID, artifactID)
+	p = filepath.Clean(p)
+	if !strings.HasPrefix(p, filepath.Clean(s.baseDir)+string(filepath.Separator)) {
+		return "", fmt.Errorf("artifact path escapes base directory")
+	}
+	return p, nil
 }

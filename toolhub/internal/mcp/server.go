@@ -486,6 +486,10 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 		base.Error = &rpcError{Code: -32602, Message: "run not found"}
 		return base
 	}
+	if err := s.policy.CheckTool("github.issues.create"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
 
 	toolName := "github.issues.create"
 	idemKey, err := core.MakeIssueIdempotencyKey(args.RunID, toolName, args.Title, args.Body, args.Labels, nil)
@@ -582,6 +586,10 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 	run, err := s.runs.GetRun(ctx, args.RunID)
 	if err != nil || run == nil {
 		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("github.issues.batch_create"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
 
@@ -851,6 +859,10 @@ func (s *Server) toolCodeBranchPRCreate(ctx context.Context, raw json.RawMessage
 		base.Error = &rpcError{Code: -32602, Message: "approval is not approved"}
 		return base
 	}
+	if approval.Scope != "code_write" {
+		base.Error = &rpcError{Code: -32602, Message: "approval scope must be code_write"}
+		return base
+	}
 
 	paths := make([]string, 0, len(args.Files))
 	for _, f := range args.Files {
@@ -991,6 +1003,10 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		base.Error = &rpcError{Code: -32602, Message: "approval is not approved"}
 		return base
 	}
+	if approval.Scope != "code_write" {
+		base.Error = &rpcError{Code: -32602, Message: "approval scope must be code_write"}
+		return base
+	}
 
 	paths := make([]string, 0, len(args.Files))
 	for _, f := range args.Files {
@@ -1006,7 +1022,9 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		base.Error = &rpcError{Code: -32603, Message: err.Error()}
 		return base
 	}
-	_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": args.MaxIterations})
+	if err := s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_started", map[string]any{"max_iterations": args.MaxIterations}); err != nil {
+		s.logger.Error("audit record decision failed", "err", err, "run_id", args.RunID, "decision_type", "repair_loop_started")
+	}
 
 	codeResult, runErr := s.code.Execute(ctx, codeops.Request{
 		BaseBranch:    args.BaseBranch,
@@ -1055,7 +1073,9 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 				attempt["lint_error"] = lintErr.Error()
 			}
 			qaAttempts = append(qaAttempts, attempt)
-			_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_iteration", attempt)
+			if err := s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", "repair_loop_iteration", attempt); err != nil {
+				s.logger.Error("audit record decision failed", "err", err, "run_id", args.RunID, "decision_type", "repair_loop_iteration")
+			}
 
 			if testErr == nil && lintErr == nil {
 				qaPassed = true
@@ -1123,8 +1143,12 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		decisionType = "repair_loop_failed"
 		stepStatus = "failed"
 	}
-	_ = s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", decisionType, result)
-	_ = s.audit.FinishStep(ctx, step.StepID, stepStatus)
+	if err := s.audit.RecordDecision(ctx, args.RunID, &step.StepID, "system", decisionType, result); err != nil {
+		s.logger.Error("audit record decision failed", "err", err, "run_id", args.RunID, "decision_type", decisionType)
+	}
+	if err := s.audit.FinishStep(ctx, step.StepID, stepStatus); err != nil {
+		s.logger.Error("audit finish step failed", "err", err, "run_id", args.RunID, "step_id", step.StepID)
+	}
 
 	s.logger.Info("tool call completed",
 		"trace_id", traceID,
@@ -1170,7 +1194,7 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 		base.Error = &rpcError{Code: -32602, Message: "run not found"}
 		return base
 	}
-	if err := s.policy.CheckTool("github.pr.get"); err != nil {
+	if err := s.policy.CheckTool("github.pr.comment.create"); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
@@ -1257,7 +1281,7 @@ func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRP
 		base.Error = &rpcError{Code: -32602, Message: "run not found"}
 		return base
 	}
-	if err := s.policy.CheckTool("github.pr.files.list"); err != nil {
+	if err := s.policy.CheckTool("github.pr.get"); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}

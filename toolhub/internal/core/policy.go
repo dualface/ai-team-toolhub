@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -53,7 +54,10 @@ func (p *Policy) CheckTool(toolName string) error {
 
 func (p *Policy) CheckPaths(paths []string) error {
 	for _, raw := range paths {
-		path := normalizePath(raw)
+		path, err := canonicalizePath(raw)
+		if err != nil {
+			return fmt.Errorf("path %q rejected: %w", raw, err)
+		}
 		for _, prefix := range p.forbiddenPathPrefixes {
 			if strings.HasPrefix(path, prefix) {
 				return fmt.Errorf("path %q forbidden by policy", raw)
@@ -65,7 +69,10 @@ func (p *Policy) CheckPaths(paths []string) error {
 
 func (p *Policy) RequiresApproval(paths []string) bool {
 	for _, raw := range paths {
-		path := normalizePath(raw)
+		path, err := canonicalizePath(raw)
+		if err != nil {
+			return true // treat unparseable paths as requiring approval
+		}
 		for _, prefix := range p.approvalPathPrefixes {
 			if strings.HasPrefix(path, prefix) {
 				return true
@@ -97,9 +104,33 @@ func parsePrefixesCSV(s string) []string {
 	return out
 }
 
+// normalizePath performs basic cleanup for prefix config values.
 func normalizePath(s string) string {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "./")
 	s = strings.TrimPrefix(s, "/")
 	return s
+}
+
+// canonicalizePath fully resolves traversal sequences and rejects unsafe paths.
+// It uses filepath.Clean to collapse ".." segments, then strips leading "/" and "./".
+// Paths that escape the root (resolve to "..") are rejected.
+func canonicalizePath(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("empty path")
+	}
+
+	cleaned := filepath.Clean(s)
+
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "..\\") {
+		return "", fmt.Errorf("path traversal detected")
+	}
+
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	cleaned = strings.TrimPrefix(cleaned, "./")
+	if cleaned == "." {
+		return "", fmt.Errorf("path resolves to root")
+	}
+	return cleaned, nil
 }
