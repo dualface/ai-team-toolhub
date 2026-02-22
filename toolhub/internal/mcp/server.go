@@ -408,7 +408,7 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 		return base
 	}
 	if replayed {
-		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: &replayIssue}
+		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false, Replayed: true}, Result: &replayIssue}
 		return base
 	}
 
@@ -650,7 +650,7 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 		return base
 	}
 	if replayed {
-		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false}, Result: replay}
+		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false, Replayed: true}, Result: replay}
 		return base
 	}
 

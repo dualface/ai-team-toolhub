@@ -37,6 +37,8 @@ func MapError(err error, fallbackStatus int) ErrorInfo {
 			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 200}
 		case "qa_execution_failed":
 			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 200}
+		case "idempotency_key_conflict":
+			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 409}
 		}
 	}
 

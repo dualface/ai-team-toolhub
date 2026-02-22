@@ -60,6 +60,12 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 
 See full schema in `openapi.yaml`.
 
+Idempotency notes:
+
+- `POST /api/v1/runs/{runID}/issues` and `POST /api/v1/runs/{runID}/prs/{prNumber}/comment`
+  accept optional `Idempotency-Key` header.
+- Replayed responses include `Idempotency-Replayed: true` and `meta.replayed=true`.
+
 ## MCP Tools
 
 - `runs_create`
@@ -72,6 +78,8 @@ See full schema in `openapi.yaml`.
 - `qa_lint`
 
 See tool schemas in `docs/mcp-tools.md`.
+
+Idempotency design notes for batch behavior are documented in `docs/C4_BATCH_IDEMPOTENCY.md`.
 
 ## Smoke Test
 
@@ -132,6 +140,12 @@ Reference defaults are in `.env.example`.
 - Logs: `docker compose logs -f toolhub`
 - Backup: `./scripts/backup.sh`
 - Restore: `./scripts/restore.sh <pg_dump.sql> <artifacts.tar.gz>`
+
+## Database Migrations
+
+- ToolHub now applies embedded SQL migrations on startup.
+- Migration files live in `toolhub/internal/db/migrations/` and run in filename order.
+- `db/init/` remains available for first-time PostgreSQL bootstrap in Docker.
 
 ## Security
 

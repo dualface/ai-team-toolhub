@@ -137,6 +137,54 @@ func (a *AuditService) ReplayResponse(ctx context.Context, runID, toolName, idem
 	return tc, true, nil
 }
 
+func (a *AuditService) ReplayResponseWithRequestCheck(ctx context.Context, runID, toolName, idempotencyKey string, request any, out any) (*db.ToolCall, bool, error) {
+	tc, err := a.db.GetSuccessfulToolCallByIdempotency(ctx, runID, toolName, idempotencyKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if tc == nil {
+		return nil, false, nil
+	}
+	if tc.RequestArtifactID == nil {
+		return nil, false, fmt.Errorf("request artifact missing for idempotency check")
+	}
+
+	storedReq, err := a.store.Read(ctx, *tc.RequestArtifactID)
+	if err != nil {
+		return nil, false, err
+	}
+	currentReq, err := json.Marshal(request)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal request for idempotency check: %w", err)
+	}
+
+	var normalizedStored bytes.Buffer
+	if err := json.Compact(&normalizedStored, storedReq); err != nil {
+		return nil, false, fmt.Errorf("normalize stored request: %w", err)
+	}
+	var normalizedCurrent bytes.Buffer
+	if err := json.Compact(&normalizedCurrent, currentReq); err != nil {
+		return nil, false, fmt.Errorf("normalize current request: %w", err)
+	}
+
+	if !bytes.Equal(normalizedStored.Bytes(), normalizedCurrent.Bytes()) {
+		return nil, false, &IdempotencyConflictError{}
+	}
+
+	if tc.ResponseArtifactID == nil {
+		return nil, false, fmt.Errorf("response artifact missing for replay")
+	}
+
+	b, err := a.store.Read(ctx, *tc.ResponseArtifactID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return nil, false, fmt.Errorf("decode replay response: %w", err)
+	}
+	return tc, true, nil
+}
+
 // ListToolCallsByRun returns all tool calls associated with a run.
 func (a *AuditService) ListToolCallsByRun(ctx context.Context, runID string) ([]*db.ToolCall, error) {
 	return a.db.ListToolCallsByRun(ctx, runID)

@@ -32,6 +32,10 @@ func New(databaseURL string) (*DB, error) {
 		conn.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
+	if err := ApplyMigrations(ctx, conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("db migrate: %w", err)
+	}
 	return &DB{conn: conn}, nil
 }
 

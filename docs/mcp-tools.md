@@ -22,6 +22,7 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `meta.tool_call_id`
     - `meta.evidence_hash`
     - `meta.dry_run`
+    - `meta.replayed` (boolean, optional)
     - `result`
 
 - `github_issues_batch_create`
@@ -51,6 +52,7 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `meta.tool_call_id`
     - `meta.evidence_hash`
     - `meta.dry_run`
+    - `meta.replayed` (boolean, optional)
     - `result`
 
 - `github_pr_get`

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/toolhub/toolhub/internal/core"
+	"github.com/toolhub/toolhub/internal/db"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
 )
@@ -583,19 +584,30 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	toolName := "github.issues.create"
-	idemKey, err := core.MakeIssueIdempotencyKey(runID, toolName, body.Title, body.Body, body.Labels, nil)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+	headerIdemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	idemKey := headerIdemKey
+	if idemKey == "" {
+		idemKey, err = core.MakeIssueIdempotencyKey(runID, toolName, body.Title, body.Body, body.Labels, nil)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	var replayIssue gh.Issue
-	tc, replayed, err := s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replayIssue)
+	var tc *db.ToolCall
+	var replayed bool
+	if headerIdemKey != "" {
+		tc, replayed, err = s.audit.ReplayResponseWithRequestCheck(r.Context(), runID, toolName, idemKey, body, &replayIssue)
+	} else {
+		tc, replayed, err = s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replayIssue)
+	}
 	if err != nil {
 		writeMappedErr(w, err, http.StatusInternalServerError)
 		return
 	}
 	if replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
 		writeJSON(w, http.StatusOK, core.ToolEnvelope{
 			OK: true,
 			Meta: core.ToolMeta{
@@ -603,6 +615,7 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 				ToolCallID:   tc.ToolCallID,
 				EvidenceHash: tc.EvidenceHash,
 				DryRun:       false,
+				Replayed:     true,
 			},
 			Result: &replayIssue,
 		})
@@ -897,22 +910,33 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 
 	toolName := "github.pr.comment.create"
 	keyLabels := []string{fmt.Sprintf("pr:%d", prNumber)}
-	idemKey, err := core.MakeIssueIdempotencyKey(runID, toolName, fmt.Sprintf("pr-%d", prNumber), body.Body, keyLabels, nil)
-	if err != nil {
-		writeMappedErr(w, err, http.StatusInternalServerError)
-		return
+	headerIdemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	idemKey := headerIdemKey
+	if idemKey == "" {
+		idemKey, err = core.MakeIssueIdempotencyKey(runID, toolName, fmt.Sprintf("pr-%d", prNumber), body.Body, keyLabels, nil)
+		if err != nil {
+			writeMappedErr(w, err, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	var replay map[string]any
-	tcReplay, replayed, err := s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replay)
+	var tcReplay *db.ToolCall
+	var replayed bool
+	if headerIdemKey != "" {
+		tcReplay, replayed, err = s.audit.ReplayResponseWithRequestCheck(r.Context(), runID, toolName, idemKey, body, &replay)
+	} else {
+		tcReplay, replayed, err = s.audit.ReplayResponse(r.Context(), runID, toolName, idemKey, &replay)
+	}
 	if err != nil {
 		writeMappedErr(w, err, http.StatusInternalServerError)
 		return
 	}
 	if replayed {
+		w.Header().Set("Idempotency-Replayed", "true")
 		writeJSON(w, http.StatusOK, core.ToolEnvelope{
 			OK:     true,
-			Meta:   core.ToolMeta{RunID: runID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false},
+			Meta:   core.ToolMeta{RunID: runID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false, Replayed: true},
 			Result: replay,
 		})
 		return
@@ -1000,11 +1024,11 @@ func writeMappedErr(w http.ResponseWriter, err error, fallbackStatus int) {
 	var apiErr *gh.APIError
 	if errors.As(err, &apiErr) {
 		mapped := core.MapError(apiErr, fallbackStatus)
-		writeErr(w, mapped.HTTPStatus, mapped.Message)
+		writeJSON(w, mapped.HTTPStatus, map[string]string{"code": mapped.Code, "message": mapped.Message})
 		return
 	}
 	mapped := core.MapError(err, fallbackStatus)
-	writeErr(w, mapped.HTTPStatus, mapped.Message)
+	writeJSON(w, mapped.HTTPStatus, map[string]string{"code": mapped.Code, "message": mapped.Message})
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {

@@ -15,6 +15,7 @@ type ToolMeta struct {
 	ToolCallID   string       `json:"tool_call_id"`
 	EvidenceHash string       `json:"evidence_hash"`
 	DryRun       bool         `json:"dry_run"`
+	Replayed     bool         `json:"replayed,omitempty"`
 	QAArtifacts  *QAArtifacts `json:"qa_artifacts,omitempty"`
 }
 
