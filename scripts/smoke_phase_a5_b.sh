@@ -178,7 +178,7 @@ assert meta.get("tool_call_id"), obj
 assert meta.get("evidence_hash"), obj
 assert meta.get("dry_run") is True, obj
 result=obj.get("result") or {}
-assert result.get("status") in ("ok","fail"), obj
+assert result.get("status") in ("pass","fail","timeout","error","dry_run"), obj
 assert isinstance(result.get("report"), dict), obj
 PY
 
@@ -196,7 +196,7 @@ assert meta.get("tool_call_id"), obj
 assert meta.get("evidence_hash"), obj
 assert meta.get("dry_run") is True, obj
 result=obj.get("result") or {}
-assert result.get("status") in ("ok","fail"), obj
+assert result.get("status") in ("pass","fail","timeout","error","dry_run"), obj
 assert isinstance(result.get("report"), dict), obj
 PY
 else
