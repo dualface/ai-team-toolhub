@@ -149,6 +149,7 @@ Reference defaults are in `.env.example`.
 - ToolHub now applies embedded SQL migrations on startup.
 - Migration files live in `toolhub/internal/db/migrations/` and run in filename order.
 - `db/init/` remains available for first-time PostgreSQL bootstrap in Docker.
+- D3 audit model extension details: `docs/D3_AUDIT_MODEL.md`.
 
 ## Sandbox PoC
 

@@ -253,3 +253,209 @@ func (d *DB) ListToolCallsByRun(ctx context.Context, runID string) ([]*ToolCall,
 	}
 	return tcs, rows.Err()
 }
+
+type Step struct {
+	StepID     string     `json:"step_id"`
+	RunID      string     `json:"run_id"`
+	Name       string     `json:"name"`
+	Type       string     `json:"type"`
+	Status     string     `json:"status"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+func (d *DB) InsertStep(ctx context.Context, s *Step) error {
+	_, err := d.conn.ExecContext(ctx,
+		`INSERT INTO steps (step_id, run_id, name, type, status, started_at, finished_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		s.StepID, s.RunID, s.Name, s.Type, s.Status, s.StartedAt, s.FinishedAt, s.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert step: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ListStepsByRun(ctx context.Context, runID string) ([]*Step, error) {
+	rows, err := d.conn.QueryContext(ctx,
+		`SELECT step_id, run_id, name, type, status, started_at, finished_at, created_at
+		 FROM steps WHERE run_id = $1 ORDER BY created_at`, runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list steps: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Step, 0)
+	for rows.Next() {
+		s := &Step{}
+		var started sql.NullTime
+		var finished sql.NullTime
+		if err := rows.Scan(&s.StepID, &s.RunID, &s.Name, &s.Type, &s.Status, &started, &finished, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan step: %w", err)
+		}
+		if started.Valid {
+			t := started.Time
+			s.StartedAt = &t
+		}
+		if finished.Valid {
+			t := finished.Time
+			s.FinishedAt = &t
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+type Decision struct {
+	DecisionID        string    `json:"decision_id"`
+	RunID             string    `json:"run_id"`
+	StepID            *string   `json:"step_id,omitempty"`
+	Actor             string    `json:"actor"`
+	DecisionType      string    `json:"decision_type"`
+	PayloadArtifactID *string   `json:"payload_artifact_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+}
+
+func (d *DB) InsertDecision(ctx context.Context, in *Decision) error {
+	_, err := d.conn.ExecContext(ctx,
+		`INSERT INTO decisions (decision_id, run_id, step_id, actor, decision_type, payload_artifact_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		in.DecisionID, in.RunID, in.StepID, in.Actor, in.DecisionType, in.PayloadArtifactID, in.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert decision: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) ListDecisionsByRun(ctx context.Context, runID string) ([]*Decision, error) {
+	rows, err := d.conn.QueryContext(ctx,
+		`SELECT decision_id, run_id, step_id, actor, decision_type, payload_artifact_id, created_at
+		 FROM decisions WHERE run_id = $1 ORDER BY created_at`, runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list decisions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Decision, 0)
+	for rows.Next() {
+		item := &Decision{}
+		var stepID sql.NullString
+		var payloadID sql.NullString
+		if err := rows.Scan(&item.DecisionID, &item.RunID, &stepID, &item.Actor, &item.DecisionType, &payloadID, &item.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan decision: %w", err)
+		}
+		if stepID.Valid {
+			s := stepID.String
+			item.StepID = &s
+		}
+		if payloadID.Valid {
+			s := payloadID.String
+			item.PayloadArtifactID = &s
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+type Approval struct {
+	ApprovalID  string     `json:"approval_id"`
+	RunID       string     `json:"run_id"`
+	Scope       string     `json:"scope"`
+	Status      string     `json:"status"`
+	RequestedAt time.Time  `json:"requested_at"`
+	ApprovedAt  *time.Time `json:"approved_at,omitempty"`
+	Approver    *string    `json:"approver,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func (d *DB) InsertApproval(ctx context.Context, in *Approval) error {
+	_, err := d.conn.ExecContext(ctx,
+		`INSERT INTO approvals (approval_id, run_id, scope, status, requested_at, approved_at, approver, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		in.ApprovalID, in.RunID, in.Scope, in.Status, in.RequestedAt, in.ApprovedAt, in.Approver, in.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert approval: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateApprovalDecision(ctx context.Context, approvalID, status string, approvedAt *time.Time, approver *string) error {
+	res, err := d.conn.ExecContext(ctx,
+		`UPDATE approvals
+		 SET status = $2, approved_at = $3, approver = $4
+		 WHERE approval_id = $1`,
+		approvalID, status, approvedAt, approver,
+	)
+	if err != nil {
+		return fmt.Errorf("update approval: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected approval update: %w", err)
+	}
+	if rows == 0 {
+		return nil
+	}
+	return nil
+}
+
+func (d *DB) GetApproval(ctx context.Context, approvalID string) (*Approval, error) {
+	item := &Approval{}
+	var approved sql.NullTime
+	var approver sql.NullString
+	err := d.conn.QueryRowContext(ctx,
+		`SELECT approval_id, run_id, scope, status, requested_at, approved_at, approver, created_at
+		 FROM approvals WHERE approval_id = $1`, approvalID,
+	).Scan(&item.ApprovalID, &item.RunID, &item.Scope, &item.Status, &item.RequestedAt, &approved, &approver, &item.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get approval: %w", err)
+	}
+	if approved.Valid {
+		t := approved.Time
+		item.ApprovedAt = &t
+	}
+	if approver.Valid {
+		s := approver.String
+		item.Approver = &s
+	}
+	return item, nil
+}
+
+func (d *DB) ListApprovalsByRun(ctx context.Context, runID string) ([]*Approval, error) {
+	rows, err := d.conn.QueryContext(ctx,
+		`SELECT approval_id, run_id, scope, status, requested_at, approved_at, approver, created_at
+		 FROM approvals WHERE run_id = $1 ORDER BY created_at`, runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list approvals: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*Approval, 0)
+	for rows.Next() {
+		item := &Approval{}
+		var approved sql.NullTime
+		var approver sql.NullString
+		if err := rows.Scan(&item.ApprovalID, &item.RunID, &item.Scope, &item.Status, &item.RequestedAt, &approved, &approver, &item.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan approval: %w", err)
+		}
+		if approved.Valid {
+			t := approved.Time
+			item.ApprovedAt = &t
+		}
+		if approver.Valid {
+			s := approver.String
+			item.Approver = &s
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
