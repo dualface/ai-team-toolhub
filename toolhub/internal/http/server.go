@@ -73,6 +73,11 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("POST /api/v1/runs", s.handleCreateRun)
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals", s.handleCreateApproval)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/approvals", s.handleListApprovals)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/approvals/{approvalID}", s.handleGetApproval)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/approve", s.handleApproveApproval)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/reject", s.handleRejectApproval)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/tool-calls", s.handleListToolCalls)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}", s.handleGetArtifact)
@@ -131,6 +136,15 @@ type createRunBody struct {
 	Purpose string `json:"purpose"`
 }
 
+type createApprovalBody struct {
+	Scope   string `json:"scope"`
+	Payload any    `json:"payload,omitempty"`
+}
+
+type resolveApprovalBody struct {
+	Approver string `json:"approver"`
+}
+
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var body createRunBody
 	if err := decodeJSONBody(w, r, &body); err != nil {
@@ -167,6 +181,132 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *Server) handleCreateApproval(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	var body createApprovalBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Scope) == "" {
+		writeErr(w, http.StatusBadRequest, "scope is required")
+		return
+	}
+
+	item, err := s.audit.CreateApproval(r.Context(), runID, body.Scope, body.Payload)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	items, err := s.audit.ListApprovalsByRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) handleGetApproval(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	approvalID := r.PathValue("approvalID")
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	item, err := s.audit.GetApproval(r.Context(), approvalID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil || item.RunID != runID {
+		writeErr(w, http.StatusNotFound, "approval not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleApproveApproval(w http.ResponseWriter, r *http.Request) {
+	s.handleResolveApproval(w, r, "approved")
+}
+
+func (s *Server) handleRejectApproval(w http.ResponseWriter, r *http.Request) {
+	s.handleResolveApproval(w, r, "rejected")
+}
+
+func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request, status string) {
+	runID := r.PathValue("runID")
+	approvalID := r.PathValue("approvalID")
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	current, err := s.audit.GetApproval(r.Context(), approvalID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if current == nil || current.RunID != runID {
+		writeErr(w, http.StatusNotFound, "approval not found")
+		return
+	}
+
+	var body resolveApprovalBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Approver) == "" {
+		writeErr(w, http.StatusBadRequest, "approver is required")
+		return
+	}
+
+	item, err := s.audit.ResolveApproval(r.Context(), approvalID, runID, status, body.Approver)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) handleListToolCalls(w http.ResponseWriter, r *http.Request) {

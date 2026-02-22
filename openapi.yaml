@@ -102,6 +102,177 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/approvals:
+    post:
+      summary: Create manual approval request
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope:
+                  type: string
+                payload:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '201':
+          description: Approval request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: List approvals for run
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Approval list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Approval'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/approvals/{approvalID}:
+    get:
+      summary: Get approval by run and id
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: approvalID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Approval details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '404':
+          description: Run or approval not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/approvals/{approvalID}/approve:
+    post:
+      summary: Approve pending approval request
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: approvalID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approver]
+              properties:
+                approver:
+                  type: string
+      responses:
+        '200':
+          description: Approval updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Run or approval not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/approvals/{approvalID}/reject:
+    post:
+      summary: Reject pending approval request
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: approvalID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approver]
+              properties:
+                approver:
+                  type: string
+      responses:
+        '200':
+          description: Approval updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Run or approval not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/runs/{runID}/tool-calls:
     get:
       summary: List tool calls for run
@@ -536,6 +707,30 @@ components:
           nullable: true
         evidence_hash:
           type: string
+        created_at:
+          type: string
+          format: date-time
+    Approval:
+      type: object
+      properties:
+        approval_id:
+          type: string
+        run_id:
+          type: string
+        scope:
+          type: string
+        status:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        approved_at:
+          type: string
+          format: date-time
+          nullable: true
+        approver:
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time

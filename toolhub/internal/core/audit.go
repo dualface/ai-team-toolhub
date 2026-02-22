@@ -204,3 +204,84 @@ func (a *AuditService) ListArtifactsByRun(ctx context.Context, runID string) ([]
 func (a *AuditService) GetArtifactByRunAndID(ctx context.Context, runID, artifactID string) (*db.Artifact, error) {
 	return a.store.GetByRunAndID(ctx, runID, artifactID)
 }
+
+func (a *AuditService) CreateApproval(ctx context.Context, runID, scope string, payload any) (*db.Approval, error) {
+	approvalID := uuid.New().String()
+	now := time.Now().UTC()
+
+	item := &db.Approval{
+		ApprovalID:  approvalID,
+		RunID:       runID,
+		Scope:       scope,
+		Status:      "requested",
+		RequestedAt: now,
+		CreatedAt:   now,
+	}
+	if err := a.db.InsertApproval(ctx, item); err != nil {
+		return nil, err
+	}
+
+	var payloadArtifactID *string
+	if payload != nil {
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("marshal approval payload: %w", err)
+		}
+		art, err := a.store.Save(ctx, SaveInput{
+			RunID:       runID,
+			Name:        "approval." + approvalID + ".payload.json",
+			ContentType: "application/json",
+			Body:        bytes.NewReader(payloadJSON),
+		})
+		if err != nil {
+			telemetry.IncArtifactWriteFailure()
+			return nil, fmt.Errorf("save approval payload artifact: %w", err)
+		}
+		payloadArtifactID = &art.ArtifactID
+	}
+
+	decision := &db.Decision{
+		DecisionID:        uuid.New().String(),
+		RunID:             runID,
+		Actor:             "system",
+		DecisionType:      "approval_requested",
+		PayloadArtifactID: payloadArtifactID,
+		CreatedAt:         now,
+	}
+	if err := a.db.InsertDecision(ctx, decision); err != nil {
+		return nil, err
+	}
+
+	return item, nil
+}
+
+func (a *AuditService) GetApproval(ctx context.Context, approvalID string) (*db.Approval, error) {
+	return a.db.GetApproval(ctx, approvalID)
+}
+
+func (a *AuditService) ListApprovalsByRun(ctx context.Context, runID string) ([]*db.Approval, error) {
+	return a.db.ListApprovalsByRun(ctx, runID)
+}
+
+func (a *AuditService) ResolveApproval(ctx context.Context, approvalID, runID, status, approver string) (*db.Approval, error) {
+	now := time.Now().UTC()
+	if err := a.db.UpdateApprovalDecision(ctx, approvalID, status, &now, &approver); err != nil {
+		return nil, err
+	}
+
+	decisionType := "approval_rejected"
+	if status == "approved" {
+		decisionType = "approval_approved"
+	}
+	if err := a.db.InsertDecision(ctx, &db.Decision{
+		DecisionID:   uuid.New().String(),
+		RunID:        runID,
+		Actor:        approver,
+		DecisionType: decisionType,
+		CreatedAt:    now,
+	}); err != nil {
+		return nil, err
+	}
+
+	return a.db.GetApproval(ctx, approvalID)
+}

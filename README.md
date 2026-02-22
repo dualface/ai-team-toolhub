@@ -47,6 +47,11 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 - `POST /api/v1/runs`
 - `GET /metrics`
 - `GET /api/v1/runs/{runID}`
+- `POST /api/v1/runs/{runID}/approvals`
+- `GET /api/v1/runs/{runID}/approvals`
+- `GET /api/v1/runs/{runID}/approvals/{approvalID}`
+- `POST /api/v1/runs/{runID}/approvals/{approvalID}/approve`
+- `POST /api/v1/runs/{runID}/approvals/{approvalID}/reject`
 - `GET /api/v1/runs/{runID}/tool-calls`
 - `GET /api/v1/runs/{runID}/artifacts`
 - `GET /api/v1/runs/{runID}/artifacts/{artifactID}`
