@@ -53,6 +53,7 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 - `POST /api/v1/runs/{runID}/approvals/{approvalID}/approve`
 - `POST /api/v1/runs/{runID}/approvals/{approvalID}/reject`
 - `POST /api/v1/runs/{runID}/code/patch`
+- `POST /api/v1/runs/{runID}/code/branch-pr`
 - `GET /api/v1/runs/{runID}/tool-calls`
 - `GET /api/v1/runs/{runID}/artifacts`
 - `GET /api/v1/runs/{runID}/artifacts/{artifactID}`
@@ -84,6 +85,7 @@ Idempotency notes:
 - `qa_test`
 - `qa_lint`
 - `code_patch_generate`
+- `code_branch_pr_create`
 
 See tool schemas in `docs/mcp-tools.md`.
 Generated MCP tool snapshot is in `docs/mcp-tools.generated.md`.
@@ -136,6 +138,7 @@ Key env vars:
 - `QA_WORKDIR`, `QA_TEST_CMD`, `QA_LINT_CMD`, `QA_TIMEOUT_SECONDS`
 - `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`, `QA_MAX_CONCURRENCY`
 - `QA_BACKEND`, `QA_SANDBOX_IMAGE`, `QA_SANDBOX_DOCKER_BIN`, `QA_SANDBOX_CONTAINER_WORKDIR`
+- `CODE_WORKDIR`, `CODE_GIT_REMOTE`
 
 QA safety notes:
 

@@ -65,3 +65,16 @@ This file is generated from `toolhub/internal/mcp/server.go`.
     - `path` (required)
     - `run_id` (required)
 
+- `code_branch_pr_create`
+  - Description: Create branch, commit changes, push branch, and open PR (requires approved approval_id)
+  - Input:
+    - `approval_id` (required)
+    - `base_branch` (required)
+    - `commit_message` (required)
+    - `dry_run` (optional)
+    - `files` (required)
+    - `head_branch` (required)
+    - `pr_body` (optional)
+    - `pr_title` (required)
+    - `run_id` (required)
+

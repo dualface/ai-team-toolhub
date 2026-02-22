@@ -245,6 +245,13 @@ type PullRequest struct {
 	} `json:"head"`
 }
 
+type CreatePullRequestInput struct {
+	Title string `json:"title"`
+	Head  string `json:"head"`
+	Base  string `json:"base"`
+	Body  string `json:"body,omitempty"`
+}
+
 type PullRequestFile struct {
 	Filename         string `json:"filename"`
 	Status           string `json:"status"`
@@ -402,6 +409,30 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, p
 		}
 	}
 	return files, nil
+}
+
+func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, in CreatePullRequestInput) (*PullRequest, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls", owner, repo)
+	resp, err := c.doAPI(ctx, http.MethodPost, url, in)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("create pull request HTTP %d and read body failed: %w", resp.StatusCode, readErr)
+		}
+		telemetry.IncGitHubAPIError("create pull request", resp.StatusCode)
+		return nil, &APIError{Operation: "create pull request", StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	var pr PullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, fmt.Errorf("decode pull request: %w", err)
+	}
+	return &pr, nil
 }
 
 func (c *Client) BatchCreateIssues(ctx context.Context, owner, repo string, issues []CreateIssueInput) ([]BatchResult, error) {

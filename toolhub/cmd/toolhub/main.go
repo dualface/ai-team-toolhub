@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/toolhub/toolhub/internal/codeops"
 	"github.com/toolhub/toolhub/internal/core"
 	"github.com/toolhub/toolhub/internal/db"
 	gh "github.com/toolhub/toolhub/internal/github"
@@ -127,6 +128,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	codeRunner := codeops.NewRunner(codeops.Config{
+		WorkDir: envOrDefault("CODE_WORKDIR", envOrDefault("QA_WORKDIR", ".")),
+		Remote:  envOrDefault("CODE_GIT_REMOTE", "origin"),
+	})
+
 	httpAddr := envOrDefault("TOOLHUB_HTTP_LISTEN", "0.0.0.0:8080")
 	mcpAddr := envOrDefault("TOOLHUB_MCP_LISTEN", "0.0.0.0:8090")
 	batchMode, err := core.ParseBatchMode(os.Getenv("BATCH_MODE"))
@@ -135,12 +141,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, logger, batchMode, httpsvr.BuildInfo{
+	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, httpsvr.BuildInfo{
 		Version:   version,
 		GitCommit: gitCommit,
 		BuildTime: buildTime,
 	})
-	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, logger, batchMode)
+	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- httpServer.ListenAndServe() }()

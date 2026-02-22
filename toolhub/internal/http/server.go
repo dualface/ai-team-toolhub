@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/toolhub/toolhub/internal/codeops"
 	"github.com/toolhub/toolhub/internal/core"
 	"github.com/toolhub/toolhub/internal/db"
 	gh "github.com/toolhub/toolhub/internal/github"
@@ -31,6 +32,7 @@ type Server struct {
 	mode   core.BatchMode
 	build  BuildInfo
 	qa     *qa.Runner
+	code   *codeops.Runner
 }
 
 type BuildInfo struct {
@@ -55,13 +57,14 @@ func RequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
 	s := &Server{
 		runs:   runs,
 		audit:  audit,
 		policy: policy,
 		gh:     ghClient,
 		qa:     qaRunner,
+		code:   codeRunner,
 		logger: logger,
 		mode:   mode,
 		build:  build,
@@ -79,6 +82,7 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/approve", s.handleApproveApproval)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/reject", s.handleRejectApproval)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/code/patch", s.handleGeneratePatch)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/code/branch-pr", s.handleCodeBranchPR)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/tool-calls", s.handleListToolCalls)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}", s.handleGetArtifact)
@@ -469,6 +473,17 @@ type codePatchBody struct {
 	DryRun          bool   `json:"dry_run,omitempty"`
 }
 
+type codeBranchPRBody struct {
+	ApprovalID    string               `json:"approval_id"`
+	BaseBranch    string               `json:"base_branch"`
+	HeadBranch    string               `json:"head_branch"`
+	CommitMessage string               `json:"commit_message"`
+	PRTitle       string               `json:"pr_title"`
+	PRBody        string               `json:"pr_body,omitempty"`
+	Files         []codeops.FileChange `json:"files"`
+	DryRun        bool                 `json:"dry_run,omitempty"`
+}
+
 func (s *Server) handleGeneratePatch(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer func() { telemetry.ObserveToolDuration("code.patch.generate", time.Since(start)) }()
@@ -539,6 +554,130 @@ func (s *Server) handleGeneratePatch(w http.ResponseWriter, r *http.Request) {
 			EvidenceHash: tc.EvidenceHash,
 			DryRun:       body.DryRun,
 		},
+		Result: result,
+	})
+}
+
+func (s *Server) handleCodeBranchPR(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("code.branch_pr.create", time.Since(start)) }()
+
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err := s.policy.CheckTool("code.branch_pr.create"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if s.code == nil {
+		writeErr(w, http.StatusInternalServerError, "code runner is not configured")
+		return
+	}
+
+	var body codeBranchPRBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.ApprovalID) == "" {
+		writeErr(w, http.StatusBadRequest, "approval_id is required")
+		return
+	}
+	approval, err := s.audit.GetApproval(r.Context(), body.ApprovalID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if approval == nil || approval.RunID != runID {
+		writeErr(w, http.StatusNotFound, "approval not found")
+		return
+	}
+	if approval.Status != "approved" {
+		writeErr(w, http.StatusForbidden, "approval is not approved")
+		return
+	}
+
+	paths := make([]string, 0, len(body.Files))
+	for _, f := range body.Files {
+		paths = append(paths, f.Path)
+	}
+	if err := s.policy.CheckPaths(paths); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	patches := make([]string, 0, len(body.Files))
+	for _, f := range body.Files {
+		patches = append(patches, core.GenerateUnifiedDiff(f.Path, f.OriginalContent, f.ModifiedContent))
+	}
+	combinedPatch := strings.Join(patches, "\n")
+
+	codeResult, runErr := s.code.Execute(r.Context(), codeops.Request{
+		BaseBranch:    body.BaseBranch,
+		HeadBranch:    body.HeadBranch,
+		CommitMessage: body.CommitMessage,
+		Files:         body.Files,
+		DryRun:        body.DryRun,
+	})
+	if codeResult == nil {
+		codeResult = &codeops.Result{}
+	}
+
+	result := map[string]any{
+		"base_branch":      body.BaseBranch,
+		"head_branch":      body.HeadBranch,
+		"planned_commands": codeResult.PlannedCommands,
+		"commit_hash":      codeResult.CommitHash,
+	}
+
+	if runErr == nil && !body.DryRun {
+		owner, repo := splitRepo(run.Repo)
+		pr, prErr := s.gh.CreatePullRequest(r.Context(), owner, repo, gh.CreatePullRequestInput{
+			Title: body.PRTitle,
+			Head:  body.HeadBranch,
+			Base:  body.BaseBranch,
+			Body:  body.PRBody,
+		})
+		if prErr != nil {
+			runErr = prErr
+		} else {
+			result["pull_request"] = pr
+		}
+	}
+
+	tc, extraIDs, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: "code.branch_pr.create",
+		Request:  body,
+		Response: result,
+		Err:      runErr,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: "code.branch_pr.create.patch.diff", ContentType: "text/x-diff", Body: []byte(combinedPatch)},
+		},
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+	if len(extraIDs) > 0 {
+		result["patch_artifact_id"] = extraIDs[0]
+	}
+
+	if runErr != nil {
+		writeMappedErr(w, runErr, http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
+		OK:     true,
+		Meta:   core.ToolMeta{RunID: runID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: body.DryRun},
 		Result: result,
 	})
 }

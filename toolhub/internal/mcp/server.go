@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/toolhub/toolhub/internal/codeops"
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
@@ -31,6 +32,7 @@ type Server struct {
 	policy *core.Policy
 	gh     *gh.Client
 	qa     *qa.Runner
+	code   *codeops.Runner
 	addr   string
 	logger *slog.Logger
 	mode   core.BatchMode
@@ -40,13 +42,14 @@ type Server struct {
 	closed bool
 }
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, logger *slog.Logger, mode core.BatchMode) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode) *Server {
 	return &Server{
 		runs:   runs,
 		audit:  audit,
 		policy: policy,
 		gh:     ghClient,
 		qa:     qaRunner,
+		code:   codeRunner,
 		addr:   addr,
 		logger: logger,
 		mode:   mode,
@@ -302,6 +305,36 @@ func ToolDefinitions() []map[string]any {
 				"required": []string{"run_id", "path", "original_content", "modified_content"},
 			},
 		},
+		{
+			"name":        "code_branch_pr_create",
+			"description": "Create branch, commit changes, push branch, and open PR (requires approved approval_id)",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":         map[string]string{"type": "string"},
+					"approval_id":    map[string]string{"type": "string"},
+					"base_branch":    map[string]string{"type": "string"},
+					"head_branch":    map[string]string{"type": "string"},
+					"commit_message": map[string]string{"type": "string"},
+					"pr_title":       map[string]string{"type": "string"},
+					"pr_body":        map[string]string{"type": "string"},
+					"dry_run":        map[string]string{"type": "boolean"},
+					"files": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"path":             map[string]string{"type": "string"},
+								"original_content": map[string]string{"type": "string"},
+								"modified_content": map[string]string{"type": "string"},
+							},
+							"required": []string{"path", "modified_content"},
+						},
+					},
+				},
+				"required": []string{"run_id", "approval_id", "base_branch", "head_branch", "commit_message", "pr_title", "files"},
+			},
+		},
 	}
 }
 
@@ -339,6 +372,8 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolQA(ctx, params.Arguments, base, qa.KindLint)
 	case "code_patch_generate":
 		return s.toolCodePatchGenerate(ctx, params.Arguments, base)
+	case "code_branch_pr_create":
+		return s.toolCodeBranchPRCreate(ctx, params.Arguments, base)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -642,6 +677,18 @@ type codePatchArgs struct {
 	DryRun          bool   `json:"dry_run,omitempty"`
 }
 
+type codeBranchPRArgs struct {
+	RunID         string               `json:"run_id"`
+	ApprovalID    string               `json:"approval_id"`
+	BaseBranch    string               `json:"base_branch"`
+	HeadBranch    string               `json:"head_branch"`
+	CommitMessage string               `json:"commit_message"`
+	PRTitle       string               `json:"pr_title"`
+	PRBody        string               `json:"pr_body,omitempty"`
+	Files         []codeops.FileChange `json:"files"`
+	DryRun        bool                 `json:"dry_run,omitempty"`
+}
+
 func (s *Server) toolCodePatchGenerate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
 	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
 
@@ -708,6 +755,135 @@ func (s *Server) toolCodePatchGenerate(ctx context.Context, raw json.RawMessage,
 	}
 	if len(extraIDs) > 0 {
 		result["patch_artifact_id"] = extraIDs[0]
+	}
+
+	base.Result = core.ToolEnvelope{
+		OK:     true,
+		Meta:   core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun},
+		Result: result,
+	}
+	return base
+}
+
+func (s *Server) toolCodeBranchPRCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
+	var args codeBranchPRArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if strings.TrimSpace(args.RunID) == "" || strings.TrimSpace(args.ApprovalID) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "run_id and approval_id are required"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("code.branch_pr.create"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if s.code == nil {
+		base.Error = &rpcError{Code: -32603, Message: "code runner is not configured"}
+		return base
+	}
+
+	approval, err := s.audit.GetApproval(ctx, args.ApprovalID)
+	if err != nil {
+		base.Error = &rpcError{Code: -32603, Message: err.Error()}
+		return base
+	}
+	if approval == nil || approval.RunID != args.RunID {
+		base.Error = &rpcError{Code: -32602, Message: "approval not found"}
+		return base
+	}
+	if approval.Status != "approved" {
+		base.Error = &rpcError{Code: -32602, Message: "approval is not approved"}
+		return base
+	}
+
+	paths := make([]string, 0, len(args.Files))
+	for _, f := range args.Files {
+		paths = append(paths, f.Path)
+	}
+	if err := s.policy.CheckPaths(paths); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+
+	patches := make([]string, 0, len(args.Files))
+	for _, f := range args.Files {
+		patches = append(patches, core.GenerateUnifiedDiff(f.Path, f.OriginalContent, f.ModifiedContent))
+	}
+	combinedPatch := strings.Join(patches, "\n")
+
+	codeResult, runErr := s.code.Execute(ctx, codeops.Request{
+		BaseBranch:    args.BaseBranch,
+		HeadBranch:    args.HeadBranch,
+		CommitMessage: args.CommitMessage,
+		Files:         args.Files,
+		DryRun:        args.DryRun,
+	})
+	if codeResult == nil {
+		codeResult = &codeops.Result{}
+	}
+
+	result := map[string]any{
+		"base_branch":      args.BaseBranch,
+		"head_branch":      args.HeadBranch,
+		"planned_commands": codeResult.PlannedCommands,
+		"commit_hash":      codeResult.CommitHash,
+	}
+
+	if runErr == nil && !args.DryRun {
+		owner, repo := splitRepo(run.Repo)
+		pr, prErr := s.gh.CreatePullRequest(ctx, owner, repo, gh.CreatePullRequestInput{
+			Title: args.PRTitle,
+			Head:  args.HeadBranch,
+			Base:  args.BaseBranch,
+			Body:  args.PRBody,
+		})
+		if prErr != nil {
+			runErr = prErr
+		} else {
+			result["pull_request"] = pr
+		}
+	}
+
+	tc, extraIDs, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID:    args.RunID,
+		ToolName: "code.branch_pr.create",
+		Request:  args,
+		Response: result,
+		Err:      runErr,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: "code.branch_pr.create.patch.diff", ContentType: "text/x-diff", Body: []byte(combinedPatch)},
+		},
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+	if len(extraIDs) > 0 {
+		result["patch_artifact_id"] = extraIDs[0]
+	}
+
+	s.logger.Info("tool call completed",
+		"trace_id", traceID,
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "code.branch_pr.create",
+		"repo", run.Repo,
+	)
+
+	if runErr != nil {
+		mapped := core.MapError(runErr, 502)
+		base.Error = &rpcError{Code: -32603, Message: mapped.Code + ": " + mapped.Message}
+		return base
 	}
 
 	base.Result = core.ToolEnvelope{
