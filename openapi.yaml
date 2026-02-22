@@ -46,6 +46,8 @@ paths:
                     type: string
                   build_time:
                     type: string
+                  contract_version:
+                    type: string
   /api/v1/runs:
     post:
       summary: Create run

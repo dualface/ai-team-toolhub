@@ -142,9 +142,10 @@ func main() {
 	}
 
 	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, httpsvr.BuildInfo{
-		Version:   version,
-		GitCommit: gitCommit,
-		BuildTime: buildTime,
+		Version:         version,
+		GitCommit:       gitCommit,
+		BuildTime:       buildTime,
+		ContractVersion: core.ContractVersion,
 	})
 	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode)
 

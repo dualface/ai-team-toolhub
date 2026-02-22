@@ -44,6 +44,8 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/healthz
 curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 ```
 
+`/version` includes build metadata and `contract_version` for API/tool contract tracking.
+
 ## Main HTTP Endpoints
 
 - `POST /api/v1/runs`

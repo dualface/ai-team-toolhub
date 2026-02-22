@@ -36,9 +36,10 @@ type Server struct {
 }
 
 type BuildInfo struct {
-	Version   string
-	GitCommit string
-	BuildTime string
+	Version         string
+	GitCommit       string
+	BuildTime       string
+	ContractVersion string
 }
 
 const maxRequestBodyBytes = 1 << 20
@@ -131,9 +132,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"version":    s.build.Version,
-		"git_commit": s.build.GitCommit,
-		"build_time": s.build.BuildTime,
+		"version":          s.build.Version,
+		"git_commit":       s.build.GitCommit,
+		"build_time":       s.build.BuildTime,
+		"contract_version": s.build.ContractVersion,
 	})
 }
 

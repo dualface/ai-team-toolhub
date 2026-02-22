@@ -154,7 +154,7 @@ func (s *Server) dispatch(ctx context.Context, req jsonRPCRequest) jsonRPCRespon
 		base.Result = map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
-			"serverInfo":      map[string]any{"name": "toolhub", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "toolhub", "version": "0.1.0", "contract_version": core.ContractVersion},
 		}
 		return base
 
