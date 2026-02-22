@@ -769,6 +769,13 @@ func (s *Server) toolCodePatchGenerate(ctx context.Context, raw json.RawMessage,
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
+	if err := s.policy.CheckPaths([]string{args.Path}); err != nil {
+		if setPathPolicyViolationResult(&base, args.RunID, args.DryRun, err) {
+			return base
+		}
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
 
 	patchText := core.GenerateUnifiedDiff(args.Path, args.OriginalContent, args.ModifiedContent)
 	lineDelta := core.CountContentLines(args.ModifiedContent) - core.CountContentLines(args.OriginalContent)
@@ -869,6 +876,9 @@ func (s *Server) toolCodeBranchPRCreate(ctx context.Context, raw json.RawMessage
 		paths = append(paths, f.Path)
 	}
 	if err := s.policy.CheckPaths(paths); err != nil {
+		if setPathPolicyViolationResult(&base, args.RunID, args.DryRun, err) {
+			return base
+		}
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
@@ -888,6 +898,12 @@ func (s *Server) toolCodeBranchPRCreate(ctx context.Context, raw json.RawMessage
 	})
 	if codeResult == nil {
 		codeResult = &codeops.Result{}
+	}
+	if runErr != nil {
+		telemetry.IncRepairCompleted("code_error")
+	}
+	if runErr != nil {
+		telemetry.IncRepairCompleted("code_error")
 	}
 
 	result := map[string]any{
@@ -1013,6 +1029,9 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		paths = append(paths, f.Path)
 	}
 	if err := s.policy.CheckPaths(paths); err != nil {
+		if setPathPolicyViolationResult(&base, args.RunID, args.DryRun, err) {
+			return base
+		}
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
 		return base
 	}
@@ -1040,6 +1059,10 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 	iterationsRun := 0
 	qaPassed := false
 	qaAttempts := make([]map[string]any, 0, args.MaxIterations)
+	var lastTestErr error
+	var lastLintErr error
+	var lastTestReport qa.Report
+	var lastLintReport qa.Report
 
 	result := map[string]any{
 		"iterations_requested": args.MaxIterations,
@@ -1058,11 +1081,21 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 
 			testReport, testErr := s.qa.Run(ctx, qa.KindTest, false)
 			lintReport, lintErr := s.qa.Run(ctx, qa.KindLint, false)
+			testStatus := qa.DeriveStatus(testReport, testErr, false)
+			lintStatus := qa.DeriveStatus(lintReport, lintErr, false)
+
+			telemetry.IncRepairQAResult("test", mapQAStatusToMetric(testStatus))
+			telemetry.IncRepairQAResult("lint", mapQAStatusToMetric(lintStatus))
+
+			lastTestErr = testErr
+			lastLintErr = lintErr
+			lastTestReport = testReport
+			lastLintReport = lintReport
 
 			attempt := map[string]any{
 				"iteration":   i,
-				"test_status": string(qa.DeriveStatus(testReport, testErr, false)),
-				"lint_status": string(qa.DeriveStatus(lintReport, lintErr, false)),
+				"test_status": string(testStatus),
+				"lint_status": string(lintStatus),
 				"test_report": testReport,
 				"lint_report": lintReport,
 			}
@@ -1078,14 +1111,18 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 			}
 
 			if testErr == nil && lintErr == nil {
+				telemetry.IncRepairIteration("pass")
 				qaPassed = true
 				break
 			}
+			telemetry.IncRepairIteration("fail")
 		}
 
 		if !qaPassed {
 			result["status"] = "failed"
 			result["qa_failure_reason"] = fmt.Sprintf("qa checks failed after %d iteration(s)", iterationsRun)
+			category := deriveQAFailureCategory(lastTestErr, lastLintErr, &lastTestReport, &lastLintReport)
+			result["qa_failure_category"] = category
 
 			rollback, rollbackErr := s.code.RollbackBranch(ctx, args.BaseBranch, args.HeadBranch, false)
 			if rollback != nil {
@@ -1093,6 +1130,11 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 			}
 			if rollbackErr != nil {
 				result["rollback_error"] = rollbackErr.Error()
+				telemetry.IncRepairRollback("failure")
+				telemetry.IncRepairCompleted("rollback_error")
+			} else {
+				telemetry.IncRepairRollback("success")
+				telemetry.IncRepairCompleted("qa_failed")
 			}
 			runErr = fmt.Errorf("qa checks failed")
 		}
@@ -1116,6 +1158,7 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 			runErr = prErr
 		} else {
 			result["pull_request"] = pr
+			telemetry.IncRepairCompleted("success")
 		}
 	}
 
@@ -1499,12 +1542,64 @@ func splitRepo(fullRepo string) (string, string) {
 	return parts[0], parts[1]
 }
 
+func mapQAStatusToMetric(status qa.Status) string {
+	switch status {
+	case qa.StatusPass:
+		return "pass"
+	case qa.StatusFail:
+		return "fail"
+	case qa.StatusTimeout:
+		return "timeout"
+	default:
+		return "error"
+	}
+}
+
+func deriveQAFailureCategory(testErr, lintErr error, testReport, lintReport *qa.Report) string {
+	if testErr != nil && lintErr != nil {
+		return "both_failure"
+	}
+	if testErr != nil {
+		var qaErr *qa.QAError
+		if (errors.As(testErr, &qaErr) && qaErr.ErrCode == qa.ErrCodeTimeout) || strings.Contains(strings.ToLower(testErr.Error()), "timeout") {
+			return "qa_timeout"
+		}
+		return "test_failure"
+	}
+	if lintErr != nil {
+		return "lint_failure"
+	}
+
+	if testReport != nil && lintReport != nil {
+		testStatus := qa.DeriveStatus(*testReport, nil, false)
+		lintStatus := qa.DeriveStatus(*lintReport, nil, false)
+		if testStatus != qa.StatusPass || lintStatus != qa.StatusPass {
+			return "qa_error"
+		}
+	}
+
+	return "qa_error"
+}
+
 func mcpContent(text string) map[string]any {
 	return map[string]any{
 		"content": []map[string]string{
 			{"type": "text", "text": text},
 		},
 	}
+}
+
+func setPathPolicyViolationResult(base *jsonRPCResponse, runID string, dryRun bool, err error) bool {
+	pv, ok := err.(*core.PolicyViolation)
+	if !ok {
+		return false
+	}
+	base.Result = core.ToolEnvelope{
+		OK:    false,
+		Meta:  core.ToolMeta{RunID: runID, DryRun: dryRun},
+		Error: &core.ToolError{Code: string(pv.Code), Message: pv.Error()},
+	}
+	return true
 }
 
 func asAPIError(err error) *gh.APIError {

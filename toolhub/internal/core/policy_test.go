@@ -69,3 +69,88 @@ func TestPolicyPathChecks(t *testing.T) {
 		t.Fatal("unexpected approval requirement for normal path")
 	}
 }
+
+func TestPolicyPathBuiltinsAlwaysEnforced(t *testing.T) {
+	p := NewPolicy("owner/repo", "github.issues.create")
+	p.SetPathPolicy("", "")
+
+	cases := []string{".github/workflows/ci.yml", ".git/config", "secrets/key.txt", ".env"}
+	for _, path := range cases {
+		err := p.CheckPaths([]string{path})
+		pv, ok := err.(*PolicyViolation)
+		if !ok {
+			t.Fatalf("expected PolicyViolation for %q, got %T (%v)", path, err, err)
+		}
+		if pv.Code != ViolationPathForbidden {
+			t.Fatalf("expected forbidden code for %q, got %q", path, pv.Code)
+		}
+	}
+}
+
+func TestPolicyPathBuiltinsMergeWithEnv(t *testing.T) {
+	p := NewPolicy("owner/repo", "github.issues.create")
+	p.SetPathPolicy(".github/,infra/,.env", "")
+
+	if len(p.forbiddenPathPrefixes) != 5 {
+		t.Fatalf("expected 5 unique forbidden prefixes, got %d: %v", len(p.forbiddenPathPrefixes), p.forbiddenPathPrefixes)
+	}
+
+	count := 0
+	for _, prefix := range p.forbiddenPathPrefixes {
+		if prefix == ".github/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected .github/ to be deduplicated, got count=%d in %v", count, p.forbiddenPathPrefixes)
+	}
+}
+
+func TestPolicyPathViolationCodes(t *testing.T) {
+	p := NewPolicy("owner/repo", "github.issues.create")
+	p.SetPathPolicy("infra/", "")
+
+	testCases := []struct {
+		name string
+		path string
+		code PolicyViolationCode
+	}{
+		{name: "traversal", path: "../secrets.txt", code: ViolationPathTraversal},
+		{name: "empty", path: "", code: ViolationPathEmpty},
+		{name: "forbidden", path: "infra/deploy.sh", code: ViolationPathForbidden},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := p.CheckPaths([]string{tc.path})
+			pv, ok := err.(*PolicyViolation)
+			if !ok {
+				t.Fatalf("expected PolicyViolation, got %T (%v)", err, err)
+			}
+			if pv.Code != tc.code {
+				t.Fatalf("expected code %q, got %q", tc.code, pv.Code)
+			}
+		})
+	}
+}
+
+func TestPolicyPathEnvVariantsBlocked(t *testing.T) {
+	p := NewPolicy("owner/repo", "github.issues.create")
+	p.SetPathPolicy("", "")
+
+	blocked := []string{".env", ".env.local", ".env.production", "./.env.local"}
+	for _, path := range blocked {
+		err := p.CheckPaths([]string{path})
+		pv, ok := err.(*PolicyViolation)
+		if !ok {
+			t.Fatalf("expected PolicyViolation for %q, got %T (%v)", path, err, err)
+		}
+		if pv.Code != ViolationPathForbidden {
+			t.Fatalf("expected forbidden code for %q, got %q", path, pv.Code)
+		}
+	}
+
+	if err := p.CheckPaths([]string{".environment"}); err != nil {
+		t.Fatalf("expected .environment to be allowed, got %v", err)
+	}
+}

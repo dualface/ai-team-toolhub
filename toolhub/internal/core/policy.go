@@ -14,19 +14,26 @@ type Policy struct {
 	approvalPathPrefixes  []string
 }
 
+var builtinForbiddenPrefixes = []string{
+	".github/",
+	".git/",
+	"secrets/",
+	".env",
+}
+
 // NewPolicy creates a Policy from comma-separated allowlist strings.
 // Empty strings mean "allow nothing".
 func NewPolicy(repoCSV, toolCSV string) *Policy {
 	return &Policy{
 		allowedRepos:          parseCSV(repoCSV),
 		allowedTools:          parseCSV(toolCSV),
-		forbiddenPathPrefixes: make([]string, 0),
+		forbiddenPathPrefixes: append([]string{}, builtinForbiddenPrefixes...),
 		approvalPathPrefixes:  make([]string, 0),
 	}
 }
 
 func (p *Policy) SetPathPolicy(forbiddenCSV, approvalCSV string) {
-	p.forbiddenPathPrefixes = parsePrefixesCSV(forbiddenCSV)
+	p.forbiddenPathPrefixes = mergeUniquePrefixes(builtinForbiddenPrefixes, parsePrefixesCSV(forbiddenCSV))
 	p.approvalPathPrefixes = parsePrefixesCSV(approvalCSV)
 }
 
@@ -54,13 +61,18 @@ func (p *Policy) CheckTool(toolName string) error {
 
 func (p *Policy) CheckPaths(paths []string) error {
 	for _, raw := range paths {
-		path, err := canonicalizePath(raw)
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return &PolicyViolation{Code: ViolationPathEmpty, Path: raw, Reason: "path is empty"}
+		}
+
+		path, err := canonicalizePath(trimmed)
 		if err != nil {
-			return fmt.Errorf("path %q rejected: %w", raw, err)
+			return &PolicyViolation{Code: ViolationPathTraversal, Path: raw, Reason: err.Error()}
 		}
 		for _, prefix := range p.forbiddenPathPrefixes {
-			if strings.HasPrefix(path, prefix) {
-				return fmt.Errorf("path %q forbidden by policy", raw)
+			if matchesForbiddenPrefix(path, prefix) {
+				return &PolicyViolation{Code: ViolationPathForbidden, Path: raw, Reason: fmt.Sprintf("matched forbidden prefix %q", prefix)}
 			}
 		}
 	}
@@ -102,6 +114,29 @@ func parsePrefixesCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func mergeUniquePrefixes(base []string, extra []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, prefix := range append(append([]string{}, base...), extra...) {
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		out = append(out, prefix)
+	}
+	return out
+}
+
+func matchesForbiddenPrefix(path, prefix string) bool {
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(path, prefix)
+	}
+	if strings.HasPrefix(prefix, ".") {
+		return path == prefix || strings.HasPrefix(path, prefix+".")
+	}
+	return strings.HasPrefix(path, prefix)
 }
 
 // normalizePath performs basic cleanup for prefix config values.

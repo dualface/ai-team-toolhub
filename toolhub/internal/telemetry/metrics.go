@@ -17,6 +17,10 @@ type registry struct {
 	artifactWriteFailures int64
 	qaTimeouts            int64
 	githubAPIErrors       map[string]map[int]int64
+	repairIterations      map[string]int64
+	repairQAResults       map[string]map[string]int64
+	repairCompleted       map[string]int64
+	repairRollbacks       map[string]int64
 }
 
 func newRegistry() *registry {
@@ -24,6 +28,10 @@ func newRegistry() *registry {
 		toolCalls:           make(map[string]map[string]int64),
 		toolDurationBuckets: make(map[string][]int64),
 		githubAPIErrors:     make(map[string]map[int]int64),
+		repairIterations:    make(map[string]int64),
+		repairQAResults:     make(map[string]map[string]int64),
+		repairCompleted:     make(map[string]int64),
+		repairRollbacks:     make(map[string]int64),
 	}
 }
 
@@ -76,6 +84,33 @@ func IncGitHubAPIError(operation string, statusCode int) {
 	defaultRegistry.githubAPIErrors[operation][statusCode]++
 }
 
+func IncRepairIteration(status string) {
+	defaultRegistry.mu.Lock()
+	defaultRegistry.repairIterations[status]++
+	defaultRegistry.mu.Unlock()
+}
+
+func IncRepairQAResult(kind, status string) {
+	defaultRegistry.mu.Lock()
+	defer defaultRegistry.mu.Unlock()
+	if _, ok := defaultRegistry.repairQAResults[kind]; !ok {
+		defaultRegistry.repairQAResults[kind] = make(map[string]int64)
+	}
+	defaultRegistry.repairQAResults[kind][status]++
+}
+
+func IncRepairCompleted(outcome string) {
+	defaultRegistry.mu.Lock()
+	defaultRegistry.repairCompleted[outcome]++
+	defaultRegistry.mu.Unlock()
+}
+
+func IncRepairRollback(status string) {
+	defaultRegistry.mu.Lock()
+	defaultRegistry.repairRollbacks[status]++
+	defaultRegistry.mu.Unlock()
+}
+
 func RenderPrometheus() string {
 	defaultRegistry.mu.Lock()
 	defer defaultRegistry.mu.Unlock()
@@ -116,6 +151,29 @@ func RenderPrometheus() string {
 		for _, sc := range statusCodes {
 			sb.WriteString(fmt.Sprintf("toolhub_github_api_errors_total{operation=\"%s\",status_code=\"%d\"} %d\n", op, sc, defaultRegistry.githubAPIErrors[op][sc]))
 		}
+	}
+
+	sb.WriteString("# TYPE toolhub_repair_loop_iterations_total counter\n")
+	for _, status := range sortedKeys(defaultRegistry.repairIterations) {
+		sb.WriteString(fmt.Sprintf("toolhub_repair_loop_iterations_total{status=\"%s\"} %d\n", status, defaultRegistry.repairIterations[status]))
+	}
+
+	sb.WriteString("# TYPE toolhub_repair_loop_qa_results_total counter\n")
+	for _, kind := range sortedKeys(defaultRegistry.repairQAResults) {
+		statuses := sortedKeys(defaultRegistry.repairQAResults[kind])
+		for _, status := range statuses {
+			sb.WriteString(fmt.Sprintf("toolhub_repair_loop_qa_results_total{kind=\"%s\",status=\"%s\"} %d\n", kind, status, defaultRegistry.repairQAResults[kind][status]))
+		}
+	}
+
+	sb.WriteString("# TYPE toolhub_repair_loop_completed_total counter\n")
+	for _, outcome := range sortedKeys(defaultRegistry.repairCompleted) {
+		sb.WriteString(fmt.Sprintf("toolhub_repair_loop_completed_total{outcome=\"%s\"} %d\n", outcome, defaultRegistry.repairCompleted[outcome]))
+	}
+
+	sb.WriteString("# TYPE toolhub_repair_loop_rollbacks_total counter\n")
+	for _, status := range sortedKeys(defaultRegistry.repairRollbacks) {
+		sb.WriteString(fmt.Sprintf("toolhub_repair_loop_rollbacks_total{status=\"%s\"} %d\n", status, defaultRegistry.repairRollbacks[status]))
 	}
 
 	return sb.String()

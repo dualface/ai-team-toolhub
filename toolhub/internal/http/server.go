@@ -213,6 +213,9 @@ func (s *Server) handleCreateApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.policy.CheckPaths(body.Paths); err != nil {
+		if writePathPolicyViolation(w, err) {
+			return
+		}
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -514,6 +517,13 @@ func (s *Server) handleGeneratePatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	if err := s.policy.CheckPaths([]string{body.Path}); err != nil {
+		if writePathPolicyViolation(w, err) {
+			return
+		}
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
 
 	patchText := core.GenerateUnifiedDiff(body.Path, body.OriginalContent, body.ModifiedContent)
 	lineDelta := core.CountContentLines(body.ModifiedContent) - core.CountContentLines(body.OriginalContent)
@@ -615,6 +625,9 @@ func (s *Server) handleCodeBranchPR(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, f.Path)
 	}
 	if err := s.policy.CheckPaths(paths); err != nil {
+		if writePathPolicyViolation(w, err) {
+			return
+		}
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -634,6 +647,12 @@ func (s *Server) handleCodeBranchPR(w http.ResponseWriter, r *http.Request) {
 	})
 	if codeResult == nil {
 		codeResult = &codeops.Result{}
+	}
+	if runErr != nil {
+		telemetry.IncRepairCompleted("code_error")
+	}
+	if runErr != nil {
+		telemetry.IncRepairCompleted("code_error")
 	}
 
 	result := map[string]any{
@@ -755,6 +774,9 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, f.Path)
 	}
 	if err := s.policy.CheckPaths(paths); err != nil {
+		if writePathPolicyViolation(w, err) {
+			return
+		}
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
@@ -782,6 +804,10 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 	iterationsRun := 0
 	qaPassed := false
 	qaAttempts := make([]map[string]any, 0, body.MaxIterations)
+	var lastTestErr error
+	var lastLintErr error
+	var lastTestReport qa.Report
+	var lastLintReport qa.Report
 
 	result := map[string]any{
 		"iterations_requested": body.MaxIterations,
@@ -800,11 +826,21 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 
 			testReport, testErr := s.qa.Run(r.Context(), qa.KindTest, false)
 			lintReport, lintErr := s.qa.Run(r.Context(), qa.KindLint, false)
+			testStatus := qa.DeriveStatus(testReport, testErr, false)
+			lintStatus := qa.DeriveStatus(lintReport, lintErr, false)
+
+			telemetry.IncRepairQAResult("test", mapQAStatusToMetric(testStatus))
+			telemetry.IncRepairQAResult("lint", mapQAStatusToMetric(lintStatus))
+
+			lastTestErr = testErr
+			lastLintErr = lintErr
+			lastTestReport = testReport
+			lastLintReport = lintReport
 
 			attempt := map[string]any{
 				"iteration":   i,
-				"test_status": string(qa.DeriveStatus(testReport, testErr, false)),
-				"lint_status": string(qa.DeriveStatus(lintReport, lintErr, false)),
+				"test_status": string(testStatus),
+				"lint_status": string(lintStatus),
 				"test_report": testReport,
 				"lint_report": lintReport,
 			}
@@ -820,14 +856,18 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if testErr == nil && lintErr == nil {
+				telemetry.IncRepairIteration("pass")
 				qaPassed = true
 				break
 			}
+			telemetry.IncRepairIteration("fail")
 		}
 
 		if !qaPassed {
 			result["status"] = "failed"
 			result["qa_failure_reason"] = fmt.Sprintf("qa checks failed after %d iteration(s)", iterationsRun)
+			category := deriveQAFailureCategory(lastTestErr, lastLintErr, &lastTestReport, &lastLintReport)
+			result["qa_failure_category"] = category
 
 			rollback, rollbackErr := s.code.RollbackBranch(r.Context(), body.BaseBranch, body.HeadBranch, false)
 			if rollback != nil {
@@ -835,6 +875,11 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 			}
 			if rollbackErr != nil {
 				result["rollback_error"] = rollbackErr.Error()
+				telemetry.IncRepairRollback("failure")
+				telemetry.IncRepairCompleted("rollback_error")
+			} else {
+				telemetry.IncRepairRollback("success")
+				telemetry.IncRepairCompleted("qa_failed")
 			}
 			runErr = fmt.Errorf("qa checks failed")
 		}
@@ -858,6 +903,7 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 			runErr = prErr
 		} else {
 			result["pull_request"] = pr
+			telemetry.IncRepairCompleted("success")
 		}
 	}
 
@@ -1633,6 +1679,45 @@ func splitRepo(fullRepo string) (string, string) {
 	return parts[0], parts[1]
 }
 
+func mapQAStatusToMetric(status qa.Status) string {
+	switch status {
+	case qa.StatusPass:
+		return "pass"
+	case qa.StatusFail:
+		return "fail"
+	case qa.StatusTimeout:
+		return "timeout"
+	default:
+		return "error"
+	}
+}
+
+func deriveQAFailureCategory(testErr, lintErr error, testReport, lintReport *qa.Report) string {
+	if testErr != nil && lintErr != nil {
+		return "both_failure"
+	}
+	if testErr != nil {
+		var qaErr *qa.QAError
+		if (errors.As(testErr, &qaErr) && qaErr.ErrCode == qa.ErrCodeTimeout) || strings.Contains(strings.ToLower(testErr.Error()), "timeout") {
+			return "qa_timeout"
+		}
+		return "test_failure"
+	}
+	if lintErr != nil {
+		return "lint_failure"
+	}
+
+	if testReport != nil && lintReport != nil {
+		testStatus := qa.DeriveStatus(*testReport, nil, false)
+		lintStatus := qa.DeriveStatus(*lintReport, nil, false)
+		if testStatus != qa.StatusPass || lintStatus != qa.StatusPass {
+			return "qa_error"
+		}
+	}
+
+	return "qa_error"
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1663,6 +1748,18 @@ func writeMappedErr(w http.ResponseWriter, err error, fallbackStatus int) {
 	}
 	mapped := core.MapError(err, fallbackStatus)
 	writeJSON(w, mapped.HTTPStatus, map[string]string{"code": mapped.Code, "message": mapped.Message})
+}
+
+func writePathPolicyViolation(w http.ResponseWriter, err error) bool {
+	pv, ok := err.(*core.PolicyViolation)
+	if !ok {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, core.ToolEnvelope{
+		OK:    false,
+		Error: &core.ToolError{Code: string(pv.Code), Message: pv.Error()},
+	})
+	return true
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
