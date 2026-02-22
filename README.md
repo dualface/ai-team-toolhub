@@ -183,7 +183,8 @@ Reference defaults are in `.env.example`.
 - GitHub App only (no PAT)
 - private key mounted read-only
 - tokens and secrets must never be logged
-- no repository code write tools are exposed
+- repository write tools are controlled and audited (`code.branch_pr.create`, `code.repair_loop`)
+- repository write actions require approval gates and do not auto-merge PRs
 
 ## License
 

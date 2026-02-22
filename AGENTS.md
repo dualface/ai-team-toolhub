@@ -69,6 +69,10 @@ For DB/audit integration checks, provide `TOOLHUB_TEST_DATABASE_URL` when needed
 
 ## Operational Boundaries
 
-- Phase D (automatic code modification workflows) is not implemented.
+- Phase D write workflows are implemented in controlled scope:
+  - D.1 `code.patch.generate` (patch artifact generation, no repo write)
+  - D.2 `code.branch_pr.create` (branch/commit/push/PR with approval gate)
+  - D.3 `code.repair_loop` (controlled QA retry + rollback + PR flow)
 - Do not add arbitrary shell execution endpoints.
-- Do not add direct merge/push automation beyond current scope.
+- Do not add automatic merge capabilities; current scope ends at PR creation.
+- Do not add force-push or bypass mechanisms that weaken approval/policy/audit controls.
