@@ -287,6 +287,21 @@ func ToolDefinitions() []map[string]any {
 				"required": []string{"run_id"},
 			},
 		},
+		{
+			"name":        "code_patch_generate",
+			"description": "Generate unified patch/diff without modifying repository",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id":           map[string]string{"type": "string"},
+					"path":             map[string]string{"type": "string"},
+					"original_content": map[string]string{"type": "string"},
+					"modified_content": map[string]string{"type": "string"},
+					"dry_run":          map[string]string{"type": "boolean"},
+				},
+				"required": []string{"run_id", "path", "original_content", "modified_content"},
+			},
+		},
 	}
 }
 
@@ -322,6 +337,8 @@ func (s *Server) handleToolCall(ctx context.Context, req jsonRPCRequest, base js
 		return s.toolQA(ctx, params.Arguments, base, qa.KindTest)
 	case "qa_lint":
 		return s.toolQA(ctx, params.Arguments, base, qa.KindLint)
+	case "code_patch_generate":
+		return s.toolCodePatchGenerate(ctx, params.Arguments, base)
 	default:
 		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)}
 		return base
@@ -615,6 +632,90 @@ type prReadArgs struct {
 type qaArgs struct {
 	RunID  string `json:"run_id"`
 	DryRun bool   `json:"dry_run,omitempty"`
+}
+
+type codePatchArgs struct {
+	RunID           string `json:"run_id"`
+	Path            string `json:"path"`
+	OriginalContent string `json:"original_content"`
+	ModifiedContent string `json:"modified_content"`
+	DryRun          bool   `json:"dry_run,omitempty"`
+}
+
+func (s *Server) toolCodePatchGenerate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
+	var args codePatchArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+	if strings.TrimSpace(args.RunID) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "run_id is required"}
+		return base
+	}
+	if strings.TrimSpace(args.Path) == "" {
+		base.Error = &rpcError{Code: -32602, Message: "path is required"}
+		return base
+	}
+
+	run, err := s.runs.GetRun(ctx, args.RunID)
+	if err != nil || run == nil {
+		base.Error = &rpcError{Code: -32602, Message: "run not found"}
+		return base
+	}
+	if err := s.policy.CheckTool("code.patch.generate"); err != nil {
+		base.Error = &rpcError{Code: -32602, Message: err.Error()}
+		return base
+	}
+
+	patchText := core.GenerateUnifiedDiff(args.Path, args.OriginalContent, args.ModifiedContent)
+	lineDelta := core.CountContentLines(args.ModifiedContent) - core.CountContentLines(args.OriginalContent)
+
+	response := map[string]any{
+		"path":       args.Path,
+		"patch":      patchText,
+		"line_delta": lineDelta,
+	}
+
+	tc, extraIDs, auditErr := s.audit.Record(ctx, core.RecordInput{
+		RunID:    args.RunID,
+		ToolName: "code.patch.generate",
+		Request:  args,
+		Response: response,
+		Err:      nil,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: "code.patch.generate.patch.diff", ContentType: "text/x-diff", Body: []byte(patchText)},
+		},
+	})
+	if auditErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
+		return base
+	}
+
+	s.logger.Info("tool call completed",
+		"trace_id", traceID,
+		"run_id", args.RunID,
+		"tool_call_id", tc.ToolCallID,
+		"tool_name", "code.patch.generate",
+		"repo", run.Repo,
+	)
+
+	result := map[string]any{
+		"path":       args.Path,
+		"patch":      patchText,
+		"line_delta": lineDelta,
+	}
+	if len(extraIDs) > 0 {
+		result["patch_artifact_id"] = extraIDs[0]
+	}
+
+	base.Result = core.ToolEnvelope{
+		OK:     true,
+		Meta:   core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun},
+		Result: result,
+	}
+	return base
 }
 
 func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {

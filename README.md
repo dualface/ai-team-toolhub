@@ -52,6 +52,7 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 - `GET /api/v1/runs/{runID}/approvals/{approvalID}`
 - `POST /api/v1/runs/{runID}/approvals/{approvalID}/approve`
 - `POST /api/v1/runs/{runID}/approvals/{approvalID}/reject`
+- `POST /api/v1/runs/{runID}/code/patch`
 - `GET /api/v1/runs/{runID}/tool-calls`
 - `GET /api/v1/runs/{runID}/artifacts`
 - `GET /api/v1/runs/{runID}/artifacts/{artifactID}`
@@ -82,6 +83,7 @@ Idempotency notes:
 - `github_pr_files_list`
 - `qa_test`
 - `qa_lint`
+- `code_patch_generate`
 
 See tool schemas in `docs/mcp-tools.md`.
 Generated MCP tool snapshot is in `docs/mcp-tools.generated.md`.

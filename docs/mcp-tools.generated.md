@@ -56,3 +56,12 @@ This file is generated from `toolhub/internal/mcp/server.go`.
     - `dry_run` (optional)
     - `run_id` (required)
 
+- `code_patch_generate`
+  - Description: Generate unified patch/diff without modifying repository
+  - Input:
+    - `dry_run` (optional)
+    - `modified_content` (required)
+    - `original_content` (required)
+    - `path` (required)
+    - `run_id` (required)
+

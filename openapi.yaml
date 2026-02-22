@@ -277,6 +277,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/code/patch:
+    post:
+      summary: Generate unified patch/diff artifact without modifying repository
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, original_content, modified_content]
+              properties:
+                path:
+                  type: string
+                original_content:
+                  type: string
+                modified_content:
+                  type: string
+                dry_run:
+                  type: boolean
+      responses:
+        '200':
+          description: Tool response envelope containing generated patch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolEnvelope'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tool not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/runs/{runID}/tool-calls:
     get:
       summary: List tool calls for run

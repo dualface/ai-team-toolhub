@@ -124,6 +124,24 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `result.report.stdout_truncated` (boolean)
     - `result.report.stderr_truncated` (boolean)
 
+- `code_patch_generate`
+  - Input:
+    - `run_id` (string, required)
+    - `path` (string, required)
+    - `original_content` (string, required)
+    - `modified_content` (string, required)
+    - `dry_run` (boolean, optional)
+  - Output:
+    - `ok`
+    - `meta.run_id`
+    - `meta.tool_call_id`
+    - `meta.evidence_hash`
+    - `meta.dry_run`
+    - `result.path`
+    - `result.patch` (unified diff text)
+    - `result.line_delta`
+    - `result.patch_artifact_id` (string, optional)
+
 ## Status Semantics
 
 ToolHub uses different status representations at different layers:

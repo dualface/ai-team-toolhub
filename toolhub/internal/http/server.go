@@ -78,6 +78,7 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("GET /api/v1/runs/{runID}/approvals/{approvalID}", s.handleGetApproval)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/approve", s.handleApproveApproval)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/approvals/{approvalID}/reject", s.handleRejectApproval)
+	mux.HandleFunc("POST /api/v1/runs/{runID}/code/patch", s.handleGeneratePatch)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/tool-calls", s.handleListToolCalls)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}", s.handleGetArtifact)
@@ -459,6 +460,87 @@ type prCommentBody struct {
 
 type qaBody struct {
 	DryRun bool `json:"dry_run,omitempty"`
+}
+
+type codePatchBody struct {
+	Path            string `json:"path"`
+	OriginalContent string `json:"original_content"`
+	ModifiedContent string `json:"modified_content"`
+	DryRun          bool   `json:"dry_run,omitempty"`
+}
+
+func (s *Server) handleGeneratePatch(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { telemetry.ObserveToolDuration("code.patch.generate", time.Since(start)) }()
+
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if err := s.policy.CheckTool("code.patch.generate"); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+
+	var body codePatchBody
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Path) == "" {
+		writeErr(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	patchText := core.GenerateUnifiedDiff(body.Path, body.OriginalContent, body.ModifiedContent)
+	lineDelta := core.CountContentLines(body.ModifiedContent) - core.CountContentLines(body.OriginalContent)
+
+	response := map[string]any{
+		"path":       body.Path,
+		"patch":      patchText,
+		"line_delta": lineDelta,
+	}
+
+	tc, extraIDs, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		RunID:    runID,
+		ToolName: "code.patch.generate",
+		Request:  body,
+		Response: response,
+		Err:      nil,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: "code.patch.generate.patch.diff", ContentType: "text/x-diff", Body: []byte(patchText)},
+		},
+	})
+	if auditErr != nil {
+		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
+		return
+	}
+
+	result := map[string]any{
+		"path":       body.Path,
+		"patch":      patchText,
+		"line_delta": lineDelta,
+	}
+	if len(extraIDs) > 0 {
+		result["patch_artifact_id"] = extraIDs[0]
+	}
+
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
+		OK: true,
+		Meta: core.ToolMeta{
+			RunID:        runID,
+			ToolCallID:   tc.ToolCallID,
+			EvidenceHash: tc.EvidenceHash,
+			DryRun:       body.DryRun,
+		},
+		Result: result,
+	})
 }
 
 func (s *Server) handleQATest(w http.ResponseWriter, r *http.Request) {
