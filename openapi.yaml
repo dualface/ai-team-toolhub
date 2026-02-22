@@ -121,6 +121,10 @@ paths:
               properties:
                 scope:
                   type: string
+                paths:
+                  type: array
+                  items:
+                    type: string
                 payload:
                   type: object
                   additionalProperties: true

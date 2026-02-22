@@ -51,3 +51,21 @@ func TestPolicyCSVWhitespace(t *testing.T) {
 		t.Fatalf("expected allowed after trimming, got %v", err)
 	}
 }
+
+func TestPolicyPathChecks(t *testing.T) {
+	p := NewPolicy("owner/repo", "github.issues.create")
+	p.SetPathPolicy(".github/,infra/", "db/init/,toolhub/internal/db/migrations/")
+
+	if err := p.CheckPaths([]string{"src/app.go", "./docs/readme.md"}); err != nil {
+		t.Fatalf("expected allowed paths, got %v", err)
+	}
+	if err := p.CheckPaths([]string{".github/workflows/ci.yml"}); err == nil {
+		t.Fatal("expected forbidden path to be denied")
+	}
+	if !p.RequiresApproval([]string{"db/init/001_schema.sql"}) {
+		t.Fatal("expected approval-required path to require approval")
+	}
+	if p.RequiresApproval([]string{"src/main.go"}) {
+		t.Fatal("unexpected approval requirement for normal path")
+	}
+}

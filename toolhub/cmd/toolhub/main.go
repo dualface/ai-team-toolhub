@@ -45,6 +45,10 @@ func main() {
 		os.Getenv("REPO_ALLOWLIST"),
 		os.Getenv("TOOL_ALLOWLIST"),
 	)
+	policy.SetPathPolicy(
+		os.Getenv("PATH_POLICY_FORBIDDEN_PREFIXES"),
+		os.Getenv("PATH_POLICY_APPROVAL_PREFIXES"),
+	)
 
 	runService := core.NewRunService(database)
 	auditService := core.NewAuditService(database, artifactStore, policy)

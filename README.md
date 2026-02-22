@@ -129,6 +129,7 @@ Key env vars:
 
 - `REPO_ALLOWLIST`
 - `TOOL_ALLOWLIST`
+- `PATH_POLICY_FORBIDDEN_PREFIXES`, `PATH_POLICY_APPROVAL_PREFIXES`
 - `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `GITHUB_PRIVATE_KEY_PATH`
 - `QA_WORKDIR`, `QA_TEST_CMD`, `QA_LINT_CMD`, `QA_TIMEOUT_SECONDS`
 - `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`, `QA_MAX_CONCURRENCY`
@@ -140,6 +141,11 @@ QA safety notes:
 - shell operators (`;`, `|`, `&&`, `||`, redirection) are blocked
 - executable must be in `QA_ALLOWED_EXECUTABLES`
 - stdout/stderr are truncated using `QA_MAX_OUTPUT_BYTES`
+
+Path policy notes:
+
+- `PATH_POLICY_FORBIDDEN_PREFIXES`: paths that are always blocked by policy checks.
+- `PATH_POLICY_APPROVAL_PREFIXES`: paths that require `scope=path_change` when creating manual approval requests.
 
 Reference defaults are in `.env.example`.
 

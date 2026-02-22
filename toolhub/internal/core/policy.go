@@ -7,17 +7,26 @@ import (
 
 // Policy enforces repo and tool allowlists parsed from comma-separated env vars.
 type Policy struct {
-	allowedRepos map[string]bool
-	allowedTools map[string]bool
+	allowedRepos          map[string]bool
+	allowedTools          map[string]bool
+	forbiddenPathPrefixes []string
+	approvalPathPrefixes  []string
 }
 
 // NewPolicy creates a Policy from comma-separated allowlist strings.
 // Empty strings mean "allow nothing".
 func NewPolicy(repoCSV, toolCSV string) *Policy {
 	return &Policy{
-		allowedRepos: parseCSV(repoCSV),
-		allowedTools: parseCSV(toolCSV),
+		allowedRepos:          parseCSV(repoCSV),
+		allowedTools:          parseCSV(toolCSV),
+		forbiddenPathPrefixes: make([]string, 0),
+		approvalPathPrefixes:  make([]string, 0),
 	}
+}
+
+func (p *Policy) SetPathPolicy(forbiddenCSV, approvalCSV string) {
+	p.forbiddenPathPrefixes = parsePrefixesCSV(forbiddenCSV)
+	p.approvalPathPrefixes = parsePrefixesCSV(approvalCSV)
 }
 
 // CheckRepo returns an error if repo is not in the allowlist.
@@ -42,6 +51,30 @@ func (p *Policy) CheckTool(toolName string) error {
 	return nil
 }
 
+func (p *Policy) CheckPaths(paths []string) error {
+	for _, raw := range paths {
+		path := normalizePath(raw)
+		for _, prefix := range p.forbiddenPathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return fmt.Errorf("path %q forbidden by policy", raw)
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Policy) RequiresApproval(paths []string) bool {
+	for _, raw := range paths {
+		path := normalizePath(raw)
+		for _, prefix := range p.approvalPathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func parseCSV(s string) map[string]bool {
 	m := make(map[string]bool)
 	for _, item := range strings.Split(s, ",") {
@@ -51,4 +84,22 @@ func parseCSV(s string) map[string]bool {
 		}
 	}
 	return m
+}
+
+func parsePrefixesCSV(s string) []string {
+	out := make([]string, 0)
+	for _, item := range strings.Split(s, ",") {
+		item = normalizePath(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func normalizePath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "./")
+	s = strings.TrimPrefix(s, "/")
+	return s
 }

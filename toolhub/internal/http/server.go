@@ -137,8 +137,9 @@ type createRunBody struct {
 }
 
 type createApprovalBody struct {
-	Scope   string `json:"scope"`
-	Payload any    `json:"payload,omitempty"`
+	Scope   string   `json:"scope"`
+	Paths   []string `json:"paths,omitempty"`
+	Payload any      `json:"payload,omitempty"`
 }
 
 type resolveApprovalBody struct {
@@ -204,8 +205,17 @@ func (s *Server) handleCreateApproval(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "scope is required")
 		return
 	}
+	if err := s.policy.CheckPaths(body.Paths); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if s.policy.RequiresApproval(body.Paths) && body.Scope != "path_change" {
+		writeErr(w, http.StatusBadRequest, "scope must be path_change for approval-required paths")
+		return
+	}
 
-	item, err := s.audit.CreateApproval(r.Context(), runID, body.Scope, body.Payload)
+	payload := map[string]any{"payload": body.Payload, "paths": body.Paths}
+	item, err := s.audit.CreateApproval(r.Context(), runID, body.Scope, payload)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
