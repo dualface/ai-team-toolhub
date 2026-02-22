@@ -1,6 +1,15 @@
 package core
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+// CodedError is implemented by domain errors that carry a machine-readable code.
+type CodedError interface {
+	error
+	ErrorCode() string
+}
 
 type ErrorInfo struct {
 	Code       string
@@ -15,6 +24,21 @@ func MapError(err error, fallbackStatus int) ErrorInfo {
 
 	msg := err.Error()
 	lower := strings.ToLower(msg)
+
+	var coded CodedError
+	if errors.As(err, &coded) {
+		code := coded.ErrorCode()
+		switch code {
+		case "qa_command_empty", "qa_command_invalid", "qa_workdir_invalid", "qa_tool_unsupported":
+			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 400}
+		case "qa_command_not_allowed":
+			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 403}
+		case "qa_timeout":
+			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 200}
+		case "qa_execution_failed":
+			return ErrorInfo{Code: code, Message: msg, HTTPStatus: 200}
+		}
+	}
 
 	switch {
 	case strings.Contains(lower, "repo") && strings.Contains(lower, "allowlist"):

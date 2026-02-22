@@ -86,8 +86,18 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `meta.tool_call_id`
     - `meta.evidence_hash`
     - `meta.dry_run`
-    - `result.status`
+    - `meta.qa_artifacts.stdout_artifact_id` (string, optional)
+    - `meta.qa_artifacts.stderr_artifact_id` (string, optional)
+    - `meta.qa_artifacts.report_artifact_id` (string, optional)
+    - `result.status` (`pass|fail|timeout|error|dry_run`)
     - `result.report`
+    - `result.report.command` (string)
+    - `result.report.exit_code` (integer)
+    - `result.report.duration_ms` (integer)
+    - `result.report.stdout` (string)
+    - `result.report.stderr` (string)
+    - `result.report.stdout_truncated` (boolean)
+    - `result.report.stderr_truncated` (boolean)
 
 - `qa_lint`
   - Input:
@@ -99,8 +109,55 @@ ToolHub MCP server exposes JSON-RPC tools over TCP (`TOOLHUB_MCP_LISTEN`).
     - `meta.tool_call_id`
     - `meta.evidence_hash`
     - `meta.dry_run`
-    - `result.status`
+    - `meta.qa_artifacts.stdout_artifact_id` (string, optional)
+    - `meta.qa_artifacts.stderr_artifact_id` (string, optional)
+    - `meta.qa_artifacts.report_artifact_id` (string, optional)
+    - `result.status` (`pass|fail|timeout|error|dry_run`)
     - `result.report`
+    - `result.report.command` (string)
+    - `result.report.exit_code` (integer)
+    - `result.report.duration_ms` (integer)
+    - `result.report.stdout` (string)
+    - `result.report.stderr` (string)
+    - `result.report.stdout_truncated` (boolean)
+    - `result.report.stderr_truncated` (boolean)
+
+## Status Semantics
+
+ToolHub uses different status representations at different layers:
+
+### Audit Status
+
+The `tool_calls.status` field in PostgreSQL records binary outcomes:
+- `ok` — the tool call succeeded
+- `fail` — the tool call failed
+
+This is the ground truth for evidence integrity. See `audit.go` for the logic:
+status is "ok" unless an error occurred.
+
+### Batch Status
+
+Batch endpoints return `result.status` with three possible values:
+- `ok` — all items in the batch succeeded
+- `fail` — all items in the batch failed
+- `partial` — some items succeeded, some failed
+
+The `partial` status is derived by business logic at response time
+(`DeriveBatchStatus`), not stored in the database. The underlying
+`tool_calls.status` for the batch operation itself remains binary ok/fail
+(the batch call either completes or errors out).
+
+### QA Status
+
+QA tools (`qa_test`, `qa_lint`) have their own status enum:
+- `pass` — command exited 0
+- `fail` — command exited non-zero
+- `timeout` — command exceeded configured timeout
+- `error` — pre-execution failure (invalid command, workdir, etc.)
+- `dry_run` — dry-run mode, command was not executed
+
+This is distinct from both audit status and batch status.
+
 
 ## Mapping to internal policy tool names
 

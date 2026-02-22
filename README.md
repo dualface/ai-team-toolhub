@@ -17,6 +17,7 @@ It exposes tools via HTTP and MCP, enforces server-side policy, and stores full 
 - Every tool call writes request/response artifacts and `evidence_hash`
 - PostgreSQL is source of truth (`runs`, `tool_calls`, `artifacts`)
 - Local artifact store keeps auditable payload snapshots
+- Audit `tool_calls.status` records binary `ok`/`fail`; batch `partial` status is derived at the response layer
 
 ## Quick Start
 
@@ -45,6 +46,10 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 
 - `POST /api/v1/runs`
 - `GET /api/v1/runs/{runID}`
+- `GET /api/v1/runs/{runID}/tool-calls`
+- `GET /api/v1/runs/{runID}/artifacts`
+- `GET /api/v1/runs/{runID}/artifacts/{artifactID}`
+- `GET /api/v1/runs/{runID}/artifacts/{artifactID}/content`
 - `POST /api/v1/runs/{runID}/issues`
 - `POST /api/v1/runs/{runID}/issues/batch`
 - `POST /api/v1/runs/{runID}/prs/{prNumber}/comment`
@@ -111,7 +116,7 @@ Key env vars:
 - `TOOL_ALLOWLIST`
 - `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `GITHUB_PRIVATE_KEY_PATH`
 - `QA_WORKDIR`, `QA_TEST_CMD`, `QA_LINT_CMD`, `QA_TIMEOUT_SECONDS`
-- `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`
+- `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`, `QA_MAX_CONCURRENCY`
 
 QA safety notes:
 

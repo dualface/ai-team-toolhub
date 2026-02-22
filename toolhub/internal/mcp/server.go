@@ -13,10 +13,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
 )
+
+type ctxKey string
+
+const ctxKeyTraceID ctxKey = "trace_id"
 
 type Server struct {
 	runs   *core.RunService
@@ -63,19 +68,6 @@ type jsonRPCResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
-}
-
-type toolMeta struct {
-	RunID        string `json:"run_id"`
-	ToolCallID   string `json:"tool_call_id"`
-	EvidenceHash string `json:"evidence_hash"`
-	DryRun       bool   `json:"dry_run"`
-}
-
-type toolEnvelope struct {
-	OK     bool     `json:"ok"`
-	Meta   toolMeta `json:"meta"`
-	Result any      `json:"result"`
 }
 
 func (s *Server) ListenAndServe() error {
@@ -136,7 +128,9 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		resp := s.dispatch(context.Background(), req)
+		traceID := uuid.New().String()
+		ctx := context.WithValue(context.Background(), ctxKeyTraceID, traceID)
+		resp := s.dispatch(ctx, req)
 		s.writeResponse(conn, resp)
 	}
 }
@@ -381,6 +375,8 @@ type batchResponseJSON struct {
 }
 
 func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args issuesCreateArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -412,7 +408,7 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 		return base
 	}
 	if replayed {
-		base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: &replayIssue}
+		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: &replayIssue}
 		return base
 	}
 
@@ -425,7 +421,7 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 		})
 	}
 
-	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+	tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: toolName, IdemKey: &idemKey, Request: args, Response: issue, Err: ghErr,
 	})
 	if auditErr != nil {
@@ -434,6 +430,7 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 	}
 
 	s.logger.Info("tool call completed",
+		"trace_id", traceID,
 		"run_id", args.RunID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", toolName,
@@ -451,7 +448,7 @@ func (s *Server) toolIssuesCreate(ctx context.Context, raw json.RawMessage, base
 	if args.DryRun {
 		result = map[string]any{"would_create": map[string]any{"repo": run.Repo, "title": args.Title, "body": args.Body, "labels": args.Labels}}
 	}
-	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
+	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
 	return base
 }
 
@@ -466,6 +463,8 @@ type issuesBatchCreateArgs struct {
 }
 
 func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args issuesBatchCreateArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -515,6 +514,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 		}
 		if replayed {
 			s.logger.Info("tool call replayed",
+				"trace_id", traceID,
 				"run_id", args.RunID,
 				"tool_call_id", tc.ToolCallID,
 				"tool_name", "github.issues.batch_create",
@@ -532,7 +532,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 			issue, ghErr = s.gh.CreateIssue(ctx, owner, repo, gh.CreateIssueInput{Title: in.Title, Body: in.Body, Labels: in.Labels})
 		}
 
-		tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+		tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
 			RunID: args.RunID, ToolName: "github.issues.batch_create", IdemKey: &idemKey,
 			Request: in, Response: issue, Err: ghErr,
 		})
@@ -542,6 +542,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 		}
 
 		s.logger.Info("tool call completed",
+			"trace_id", traceID,
 			"run_id", args.RunID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", "github.issues.batch_create",
@@ -556,7 +557,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 			if s.mode == core.BatchModeStrict {
 				stoppedAt := i
 				status := core.DeriveBatchStatus(processed, replayedCount, errCount)
-				base.Result = toolEnvelope{OK: false, Meta: toolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
+				base.Result = core.ToolEnvelope{OK: false, Meta: core.ToolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
 					Status:       status,
 					Mode:         s.mode,
 					Total:        len(args.Issues),
@@ -577,7 +578,7 @@ func (s *Server) toolIssuesBatchCreate(ctx context.Context, raw json.RawMessage,
 
 	status := core.DeriveBatchStatus(len(args.Issues), replayedCount, errCount)
 
-	base.Result = toolEnvelope{OK: errCount == 0, Meta: toolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
+	base.Result = core.ToolEnvelope{OK: errCount == 0, Meta: core.ToolMeta{RunID: args.RunID, DryRun: args.DryRun}, Result: batchResponseJSON{
 		Status:       status,
 		Mode:         s.mode,
 		Total:        len(args.Issues),
@@ -608,6 +609,8 @@ type qaArgs struct {
 }
 
 func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args prCommentArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -647,7 +650,7 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 		return base
 	}
 	if replayed {
-		base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false}, Result: replay}
+		base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false}, Result: replay}
 		return base
 	}
 
@@ -658,7 +661,7 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 		comment, ghErr = s.gh.CreatePRComment(ctx, owner, repo, args.PRNumber, args.Body)
 	}
 
-	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+	tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: toolName, IdemKey: &idemKey,
 		Request: args,
 		Response: map[string]any{
@@ -673,6 +676,7 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 	}
 
 	s.logger.Info("tool call completed",
+		"trace_id", traceID,
 		"run_id", args.RunID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", toolName,
@@ -691,11 +695,13 @@ func (s *Server) toolPRCommentCreate(ctx context.Context, raw json.RawMessage, b
 	if args.DryRun {
 		result = map[string]any{"would_comment": map[string]any{"repo": run.Repo, "pr_number": args.PRNumber, "body": args.Body}}
 	}
-	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
+	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun}, Result: result}
 	return base
 }
 
 func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args prReadArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -719,7 +725,7 @@ func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRP
 	owner, repo := splitRepo(run.Repo)
 	pr, ghErr := s.gh.GetPullRequest(ctx, owner, repo, args.PRNumber)
 
-	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+	tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: "github.pr.get",
 		Request:  map[string]any{"pr_number": args.PRNumber},
 		Response: pr,
@@ -731,6 +737,7 @@ func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRP
 	}
 
 	s.logger.Info("tool call completed",
+		"trace_id", traceID,
 		"run_id", args.RunID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", "github.pr.get",
@@ -744,11 +751,13 @@ func (s *Server) toolPRGet(ctx context.Context, raw json.RawMessage, base jsonRP
 		return base
 	}
 
-	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: pr}
+	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: pr}
 	return base
 }
 
 func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base jsonRPCResponse) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args prReadArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -768,7 +777,7 @@ func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base 
 	owner, repo := splitRepo(run.Repo)
 	files, ghErr := s.gh.ListPullRequestFiles(ctx, owner, repo, args.PRNumber)
 
-	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+	tc, _, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: "github.pr.files.list",
 		Request:  map[string]any{"pr_number": args.PRNumber},
 		Response: map[string]any{"files": files, "count": len(files)},
@@ -780,6 +789,7 @@ func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base 
 	}
 
 	s.logger.Info("tool call completed",
+		"trace_id", traceID,
 		"run_id", args.RunID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", "github.pr.files.list",
@@ -793,11 +803,13 @@ func (s *Server) toolPRFilesList(ctx context.Context, raw json.RawMessage, base 
 		return base
 	}
 
-	base.Result = toolEnvelope{OK: true, Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files)}}
+	base.Result = core.ToolEnvelope{OK: true, Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: false}, Result: map[string]any{"files": files, "count": len(files)}}
 	return base
 }
 
 func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCResponse, kind qa.Kind) jsonRPCResponse {
+	traceID, _ := ctx.Value(ctxKeyTraceID).(string)
+
 	var args qaArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		base.Error = &rpcError{Code: -32602, Message: err.Error()}
@@ -819,19 +831,66 @@ func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCRe
 	}
 
 	report, runErr := s.qa.Run(ctx, kind, args.DryRun)
-	tc, auditErr := s.audit.Record(ctx, core.RecordInput{
+	if runErr != nil && report.Command == "" {
+		_, _, auditErr := s.audit.Record(ctx, core.RecordInput{
+			RunID:    args.RunID,
+			ToolName: string(kind),
+			Request:  args,
+			Response: nil,
+			Err:      runErr,
+		})
+		if auditErr != nil {
+			s.logger.Error("audit record failed",
+				"trace_id", traceID,
+				"err", auditErr,
+			)
+		}
+		s.logger.Error("tool call failed",
+			"trace_id", traceID,
+			"run_id", args.RunID,
+			"tool_name", string(kind),
+			"err", runErr,
+		)
+		base.Error = &rpcError{Code: -32602, Message: runErr.Error()}
+		return base
+	}
+
+	reportJSON, reportJSONErr := json.Marshal(report)
+	if reportJSONErr != nil {
+		base.Error = &rpcError{Code: -32603, Message: "marshal qa report failed: " + reportJSONErr.Error()}
+		return base
+	}
+
+	tc, extraArtifactIDs, auditErr := s.audit.Record(ctx, core.RecordInput{
 		RunID: args.RunID, ToolName: string(kind),
 		Request:  args,
 		Response: map[string]any{"report": report},
 		Err:      runErr,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: fmt.Sprintf("%s.stdout.txt", kind), ContentType: "text/plain", Body: []byte(report.Stdout)},
+			{Name: fmt.Sprintf("%s.stderr.txt", kind), ContentType: "text/plain", Body: []byte(report.Stderr)},
+			{Name: fmt.Sprintf("%s.report.json", kind), ContentType: "application/json", Body: reportJSON},
+		},
 	})
 	if auditErr != nil {
 		base.Error = &rpcError{Code: -32603, Message: "audit record failed: " + auditErr.Error()}
 		return base
 	}
 
+	qaArtifacts := &core.QAArtifacts{}
+	if len(extraArtifactIDs) > 0 {
+		qaArtifacts.StdoutArtifactID = extraArtifactIDs[0]
+	}
+	if len(extraArtifactIDs) > 1 {
+		qaArtifacts.StderrArtifactID = extraArtifactIDs[1]
+	}
+	if len(extraArtifactIDs) > 2 {
+		qaArtifacts.ReportArtifactID = extraArtifactIDs[2]
+	}
+
 	if runErr != nil {
 		s.logger.Error("tool call failed",
+			"trace_id", traceID,
 			"run_id", args.RunID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", string(kind),
@@ -840,6 +899,7 @@ func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCRe
 		)
 	} else {
 		s.logger.Info("tool call completed",
+			"trace_id", traceID,
 			"run_id", args.RunID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", string(kind),
@@ -848,17 +908,20 @@ func (s *Server) toolQA(ctx context.Context, raw json.RawMessage, base jsonRPCRe
 		)
 	}
 
-	status := "ok"
-	if runErr != nil {
-		status = "fail"
-	}
-	base.Result = toolEnvelope{
+	status := qa.DeriveStatus(report, runErr, args.DryRun)
+	base.Result = core.ToolEnvelope{
 		OK:   runErr == nil,
-		Meta: toolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun},
+		Meta: core.ToolMeta{RunID: args.RunID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: args.DryRun, QAArtifacts: qaArtifacts},
 		Result: map[string]any{
-			"status": status,
+			"status": string(status),
 			"report": report,
 		},
+		Error: func() *core.ToolError {
+			if runErr == nil {
+				return nil
+			}
+			return &core.ToolError{Code: string(status), Message: runErr.Error()}
+		}(),
 	}
 	return base
 }

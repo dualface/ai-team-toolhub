@@ -25,6 +25,7 @@ type Config struct {
 	LintCmd            string
 	Timeout            time.Duration
 	MaxOutputBytes     int
+	MaxConcurrency     int
 	AllowedExecutables []string
 }
 
@@ -40,12 +41,73 @@ type Report struct {
 	OutputLimitBytes int    `json:"output_limit_bytes"`
 }
 
+// Status represents the outcome of a QA command execution.
+type Status string
+
+const (
+	StatusPass    Status = "pass"
+	StatusFail    Status = "fail"
+	StatusTimeout Status = "timeout"
+	StatusError   Status = "error"
+	StatusDryRun  Status = "dry_run"
+)
+
+const (
+	ErrCodeCommandEmpty        = "qa_command_empty"
+	ErrCodeCommandNotAllowed   = "qa_command_not_allowed"
+	ErrCodeCommandInvalid      = "qa_command_invalid"
+	ErrCodeWorkdirInvalid      = "qa_workdir_invalid"
+	ErrCodeToolUnsupported     = "qa_tool_unsupported"
+	ErrCodeTimeout             = "qa_timeout"
+	ErrCodeExecFailed          = "qa_execution_failed"
+	ErrCodeConcurrencyExceeded = "qa_concurrency_exceeded"
+)
+
+// QAError represents a typed QA error with a machine-readable code.
+type QAError struct {
+	ErrCode string
+	Detail  string
+}
+
+func (e *QAError) Error() string {
+	return e.Detail
+}
+
+func (e *QAError) ErrorCode() string { return e.ErrCode }
+
+// DeriveStatus determines the QA execution status from the report, error, and dry_run flag.
+func DeriveStatus(report Report, err error, dryRun bool) Status {
+	if dryRun {
+		return StatusDryRun
+	}
+	if err == nil {
+		return StatusPass
+	}
+	var qaErr *QAError
+	if errors.As(err, &qaErr) {
+		switch qaErr.ErrCode {
+		case ErrCodeTimeout:
+			return StatusTimeout
+		case ErrCodeExecFailed:
+			return StatusFail
+		default:
+			return StatusError
+		}
+	}
+
+	if report.ExitCode > 0 {
+		return StatusFail
+	}
+	return StatusError
+}
+
 type Runner struct {
 	cfg                Config
 	allowedExecutables map[string]bool
+	semaphore          chan struct{}
 }
 
-func NewRunner(cfg Config) *Runner {
+func NewRunner(cfg Config) (*Runner, error) {
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = "."
 	}
@@ -61,6 +123,9 @@ func NewRunner(cfg Config) *Runner {
 	if cfg.MaxOutputBytes <= 0 {
 		cfg.MaxOutputBytes = 256 * 1024
 	}
+	if cfg.MaxConcurrency <= 0 {
+		cfg.MaxConcurrency = 2
+	}
 	if len(cfg.AllowedExecutables) == 0 {
 		cfg.AllowedExecutables = []string{
 			"go", "make", "pytest", "python", "python3", "npm", "npx", "yarn", "pnpm", "ruff", "eslint", "golangci-lint",
@@ -73,10 +138,40 @@ func NewRunner(cfg Config) *Runner {
 			allowed[exe] = true
 		}
 	}
-	return &Runner{cfg: cfg, allowedExecutables: allowed}
+	if err := validateConfiguredCommand(cfg.TestCmd, allowed); err != nil {
+		return nil, err
+	}
+	if err := validateConfiguredCommand(cfg.LintCmd, allowed); err != nil {
+		return nil, err
+	}
+	return &Runner{cfg: cfg, allowedExecutables: allowed, semaphore: make(chan struct{}, cfg.MaxConcurrency)}, nil
+}
+
+func validateConfiguredCommand(cmdline string, allowedExecutables map[string]bool) error {
+	if err := validateCommandLine(cmdline); err != nil {
+		return err
+	}
+	args, err := splitCommandLine(cmdline)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return &QAError{ErrCode: ErrCodeCommandEmpty, Detail: "qa command is empty"}
+	}
+	if !allowedExecutables[args[0]] {
+		return &QAError{ErrCode: ErrCodeCommandNotAllowed, Detail: fmt.Sprintf("qa executable %q is not in allowlist", args[0])}
+	}
+	return nil
 }
 
 func (r *Runner) Run(ctx context.Context, kind Kind, dryRun bool) (Report, error) {
+	select {
+	case r.semaphore <- struct{}{}:
+		defer func() { <-r.semaphore }()
+	case <-ctx.Done():
+		return Report{}, &QAError{ErrCode: ErrCodeConcurrencyExceeded, Detail: "qa concurrency limit exceeded: " + ctx.Err().Error()}
+	}
+
 	cmdline, err := r.commandFor(kind)
 	if err != nil {
 		return Report{}, err
@@ -89,10 +184,10 @@ func (r *Runner) Run(ctx context.Context, kind Kind, dryRun bool) (Report, error
 		return Report{}, err
 	}
 	if len(args) == 0 {
-		return Report{}, fmt.Errorf("qa command is empty")
+		return Report{}, &QAError{ErrCode: ErrCodeCommandEmpty, Detail: "qa command is empty"}
 	}
 	if !r.allowedExecutables[args[0]] {
-		return Report{}, fmt.Errorf("qa executable %q is not in allowlist", args[0])
+		return Report{}, &QAError{ErrCode: ErrCodeCommandNotAllowed, Detail: fmt.Sprintf("qa executable %q is not in allowlist", args[0])}
 	}
 	wd, err := absWorkDir(r.cfg.WorkDir)
 	if err != nil {
@@ -133,13 +228,13 @@ func (r *Runner) Run(ctx context.Context, kind Kind, dryRun bool) (Report, error
 
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 		report.ExitCode = -1
-		return report, fmt.Errorf("qa command timed out after %s", r.cfg.Timeout)
+		return report, &QAError{ErrCode: ErrCodeTimeout, Detail: fmt.Sprintf("qa command timed out after %s", r.cfg.Timeout)}
 	}
 
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
 		report.ExitCode = exitErr.ExitCode()
-		return report, fmt.Errorf("qa command failed with exit code %d", report.ExitCode)
+		return report, &QAError{ErrCode: ErrCodeExecFailed, Detail: fmt.Sprintf("qa command failed with exit code %d", report.ExitCode)}
 	}
 
 	report.ExitCode = -1
@@ -153,13 +248,13 @@ func (r *Runner) commandFor(kind Kind) (string, error) {
 	case KindLint:
 		return r.cfg.LintCmd, nil
 	default:
-		return "", fmt.Errorf("unsupported qa tool: %s", kind)
+		return "", &QAError{ErrCode: ErrCodeToolUnsupported, Detail: fmt.Sprintf("unsupported qa tool: %s", kind)}
 	}
 }
 
 func absWorkDir(dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
-		return "", fmt.Errorf("qa workdir is empty")
+		return "", &QAError{ErrCode: ErrCodeWorkdirInvalid, Detail: "qa workdir is empty"}
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -177,12 +272,12 @@ func absWorkDir(dir string) (string, error) {
 func validateCommandLine(cmdline string) error {
 	trimmed := strings.TrimSpace(cmdline)
 	if trimmed == "" {
-		return fmt.Errorf("qa command is empty")
+		return &QAError{ErrCode: ErrCodeCommandEmpty, Detail: "qa command is empty"}
 	}
 	dangerous := []string{"&&", "||", ";", "|", "$(", "`", ">", "<", "\n", "\r"}
 	for _, token := range dangerous {
 		if strings.Contains(trimmed, token) {
-			return fmt.Errorf("qa command contains forbidden shell operator %q", token)
+			return &QAError{ErrCode: ErrCodeCommandInvalid, Detail: fmt.Sprintf("qa command contains forbidden shell operator %q", token)}
 		}
 	}
 	return nil
@@ -234,10 +329,10 @@ func splitCommandLine(input string) ([]string, error) {
 	}
 
 	if escape {
-		return nil, fmt.Errorf("unterminated escape in qa command")
+		return nil, &QAError{ErrCode: ErrCodeCommandInvalid, Detail: "unterminated escape in qa command"}
 	}
 	if quote != 0 {
-		return nil, fmt.Errorf("unterminated quote in qa command")
+		return nil, &QAError{ErrCode: ErrCodeCommandInvalid, Detail: "unterminated quote in qa command"}
 	}
 	flush()
 	return args, nil

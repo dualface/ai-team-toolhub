@@ -40,7 +40,7 @@ func TestAuditConsistencyDBVsArtifact(t *testing.T) {
 		t.Fatalf("create run: %v", err)
 	}
 
-	tcOK, err := audit.Record(ctx, RecordInput{
+	tcOK, _, err := audit.Record(ctx, RecordInput{
 		RunID:    run.RunID,
 		ToolName: "github.issues.create",
 		Request:  map[string]any{"title": "ok"},
@@ -70,7 +70,7 @@ func TestAuditConsistencyDBVsArtifact(t *testing.T) {
 		t.Fatalf("expected readable response artifact file: %v", err)
 	}
 
-	tcFail, err := audit.Record(ctx, RecordInput{
+	tcFail, _, err := audit.Record(ctx, RecordInput{
 		RunID:    run.RunID,
 		ToolName: "github.issues.create",
 		Request:  map[string]any{"title": "fail"},

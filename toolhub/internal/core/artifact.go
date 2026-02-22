@@ -86,6 +86,11 @@ func (s *ArtifactStore) Get(ctx context.Context, artifactID string) (*db.Artifac
 	return s.db.GetArtifact(ctx, artifactID)
 }
 
+// GetByRunAndID retrieves artifact metadata by run ID and artifact ID.
+func (s *ArtifactStore) GetByRunAndID(ctx context.Context, runID, artifactID string) (*db.Artifact, error) {
+	return s.db.GetArtifactByRunAndID(ctx, runID, artifactID)
+}
+
 // ListByRun returns all artifacts belonging to a run.
 func (s *ArtifactStore) ListByRun(ctx context.Context, runID string) ([]*db.Artifact, error) {
 	return s.db.ListArtifactsByRun(ctx, runID)

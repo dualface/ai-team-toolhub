@@ -145,6 +145,22 @@ func (d *DB) GetArtifact(ctx context.Context, artifactID string) (*Artifact, err
 	return a, nil
 }
 
+// GetArtifactByRunAndID retrieves an artifact by run ID and artifact ID.
+func (d *DB) GetArtifactByRunAndID(ctx context.Context, runID, artifactID string) (*Artifact, error) {
+	a := &Artifact{}
+	err := d.conn.QueryRowContext(ctx,
+		`SELECT artifact_id, run_id, name, uri, sha256, size_bytes, content_type, created_at
+		 FROM artifacts WHERE run_id = $1 AND artifact_id = $2`, runID, artifactID,
+	).Scan(&a.ArtifactID, &a.RunID, &a.Name, &a.URI, &a.SHA256, &a.SizeBytes, &a.ContentType, &a.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get artifact by run and id: %w", err)
+	}
+	return a, nil
+}
+
 // ListArtifactsByRun returns all artifacts for a given run.
 func (d *DB) ListArtifactsByRun(ctx context.Context, runID string) ([]*Artifact, error) {
 	rows, err := d.conn.QueryContext(ctx,

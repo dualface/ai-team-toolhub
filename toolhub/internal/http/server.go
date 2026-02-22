@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/toolhub/toolhub/internal/core"
 	gh "github.com/toolhub/toolhub/internal/github"
 	"github.com/toolhub/toolhub/internal/qa"
@@ -37,6 +39,20 @@ type BuildInfo struct {
 
 const maxRequestBodyBytes = 1 << 20
 
+const maxArtifactContentBytes = 10 * 1024 * 1024
+
+type ctxKey string
+
+const ctxKeyRequestID ctxKey = "request_id"
+
+// RequestIDFromContext extracts the request_id from context, or returns empty string.
+func RequestIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyRequestID).(string); ok {
+		return v
+	}
+	return ""
+}
+
 func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
 	s := &Server{
 		runs:   runs,
@@ -54,6 +70,10 @@ func NewServer(addr string, runs *core.RunService, audit *core.AuditService, pol
 	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("POST /api/v1/runs", s.handleCreateRun)
 	mux.HandleFunc("GET /api/v1/runs/{runID}", s.handleGetRun)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/tool-calls", s.handleListToolCalls)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts", s.handleListArtifacts)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}", s.handleGetArtifact)
+	mux.HandleFunc("GET /api/v1/runs/{runID}/artifacts/{artifactID}/content", s.handleGetArtifactContent)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues", s.handleCreateIssue)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/issues/batch", s.handleBatchCreateIssues)
 	mux.HandleFunc("POST /api/v1/runs/{runID}/qa/test", s.handleQATest)
@@ -140,24 +160,130 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+func (s *Server) handleListToolCalls(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	toolCalls, err := s.audit.ListToolCallsByRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toolCalls)
+}
+
+func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	artifacts, err := s.audit.ListArtifactsByRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, artifacts)
+}
+
+func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	artifactID := r.PathValue("artifactID")
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	art, err := s.audit.GetArtifactByRunAndID(r.Context(), runID, artifactID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if art == nil {
+		writeErr(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, art)
+}
+
+func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runID")
+	artifactID := r.PathValue("artifactID")
+
+	run, err := s.runs.GetRun(r.Context(), runID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if run == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	art, err := s.audit.GetArtifactByRunAndID(r.Context(), runID, artifactID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if art == nil {
+		writeErr(w, http.StatusNotFound, "artifact not found")
+		return
+	}
+
+	if !strings.HasPrefix(art.URI, "file://") {
+		writeErr(w, http.StatusInternalServerError, "unsupported artifact uri")
+		return
+	}
+
+	path := strings.TrimPrefix(art.URI, "file://")
+	f, err := os.Open(path)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "read artifact file failed")
+		return
+	}
+	defer f.Close()
+
+	contentType := strings.TrimSpace(art.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+
+	if _, err := io.Copy(w, io.LimitReader(f, maxArtifactContentBytes)); err != nil {
+		s.logger.Error("stream artifact content failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"run_id", runID,
+			"artifact_id", artifactID,
+			"err", err,
+		)
+	}
+}
+
 type createIssueBody struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
 	Labels []string `json:"labels,omitempty"`
 	DryRun bool     `json:"dry_run,omitempty"`
-}
-
-type toolResponseMeta struct {
-	RunID        string `json:"run_id"`
-	ToolCallID   string `json:"tool_call_id"`
-	EvidenceHash string `json:"evidence_hash"`
-	DryRun       bool   `json:"dry_run"`
-}
-
-type toolResponse struct {
-	OK     bool             `json:"ok"`
-	Meta   toolResponseMeta `json:"meta"`
-	Result any              `json:"result"`
 }
 
 type dryRunIssuePreview struct {
@@ -207,22 +333,68 @@ func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) 
 	}
 
 	report, runErr := s.qa.Run(r.Context(), kind, body.DryRun)
-	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	if runErr != nil && report.Command == "" {
+		_, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+			RunID:    runID,
+			ToolName: string(kind),
+			Request:  body,
+			Response: nil,
+			Err:      runErr,
+		})
+		if auditErr != nil {
+			s.logger.Error("audit record failed",
+				"request_id", RequestIDFromContext(r.Context()),
+				"err", auditErr,
+			)
+		}
+		s.logger.Error("tool call failed",
+			"request_id", RequestIDFromContext(r.Context()),
+			"run_id", runID,
+			"tool_name", string(kind),
+			"err", runErr,
+		)
+		writeMappedErr(w, runErr, http.StatusBadRequest)
+		return
+	}
+
+	reportJSON, reportJSONErr := json.Marshal(report)
+	if reportJSONErr != nil {
+		writeErr(w, http.StatusInternalServerError, "marshal qa report failed: "+reportJSONErr.Error())
+		return
+	}
+
+	tc, extraArtifactIDs, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: string(kind),
 		Request:  body,
 		Response: map[string]any{"report": report},
 		Err:      runErr,
+		ExtraArtifacts: []core.ExtraArtifact{
+			{Name: fmt.Sprintf("%s.stdout.txt", kind), ContentType: "text/plain", Body: []byte(report.Stdout)},
+			{Name: fmt.Sprintf("%s.stderr.txt", kind), ContentType: "text/plain", Body: []byte(report.Stderr)},
+			{Name: fmt.Sprintf("%s.report.json", kind), ContentType: "application/json", Body: reportJSON},
+		},
 	})
 	if auditErr != nil {
 		writeErr(w, http.StatusInternalServerError, "audit record failed: "+auditErr.Error())
 		return
 	}
 
-	status := "ok"
+	qaArtifacts := &core.QAArtifacts{}
+	if len(extraArtifactIDs) > 0 {
+		qaArtifacts.StdoutArtifactID = extraArtifactIDs[0]
+	}
+	if len(extraArtifactIDs) > 1 {
+		qaArtifacts.StderrArtifactID = extraArtifactIDs[1]
+	}
+	if len(extraArtifactIDs) > 2 {
+		qaArtifacts.ReportArtifactID = extraArtifactIDs[2]
+	}
+
+	status := qa.DeriveStatus(report, runErr, body.DryRun)
 	if runErr != nil {
-		status = "fail"
 		s.logger.Error("tool call failed",
+			"request_id", RequestIDFromContext(r.Context()),
 			"run_id", runID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", string(kind),
@@ -231,6 +403,7 @@ func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) 
 		)
 	} else {
 		s.logger.Info("tool call completed",
+			"request_id", RequestIDFromContext(r.Context()),
 			"run_id", runID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", string(kind),
@@ -239,15 +412,22 @@ func (s *Server) handleQA(w http.ResponseWriter, r *http.Request, kind qa.Kind) 
 		)
 	}
 
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK: runErr == nil,
-		Meta: toolResponseMeta{
+		Meta: core.ToolMeta{
 			RunID:        runID,
 			ToolCallID:   tc.ToolCallID,
 			EvidenceHash: tc.EvidenceHash,
 			DryRun:       body.DryRun,
+			QAArtifacts:  qaArtifacts,
 		},
-		Result: map[string]any{"status": status, "report": report},
+		Result: map[string]any{"status": string(status), "report": report},
+		Error: func() *core.ToolError {
+			if runErr == nil {
+				return nil
+			}
+			return &core.ToolError{Code: string(status), Message: runErr.Error()}
+		}(),
 	})
 }
 
@@ -277,7 +457,7 @@ func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
 	owner, repo := splitRepo(run.Repo)
 	pr, ghErr := s.gh.GetPullRequest(r.Context(), owner, repo, prNumber)
 
-	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: "github.pr.get",
 		Request:  map[string]any{"pr_number": prNumber},
@@ -290,6 +470,7 @@ func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("tool call completed",
+		"request_id", RequestIDFromContext(r.Context()),
 		"run_id", runID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", "github.pr.get",
@@ -302,9 +483,9 @@ func (s *Server) handleGetPR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK: true,
-		Meta: toolResponseMeta{
+		Meta: core.ToolMeta{
 			RunID:        runID,
 			ToolCallID:   tc.ToolCallID,
 			EvidenceHash: tc.EvidenceHash,
@@ -340,7 +521,7 @@ func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
 	owner, repo := splitRepo(run.Repo)
 	files, ghErr := s.gh.ListPullRequestFiles(r.Context(), owner, repo, prNumber)
 
-	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: "github.pr.files.list",
 		Request:  map[string]any{"pr_number": prNumber},
@@ -353,6 +534,7 @@ func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("tool call completed",
+		"request_id", RequestIDFromContext(r.Context()),
 		"run_id", runID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", "github.pr.files.list",
@@ -365,9 +547,9 @@ func (s *Server) handleListPRFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK: true,
-		Meta: toolResponseMeta{
+		Meta: core.ToolMeta{
 			RunID:        runID,
 			ToolCallID:   tc.ToolCallID,
 			EvidenceHash: tc.EvidenceHash,
@@ -414,9 +596,9 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if replayed {
-		writeJSON(w, http.StatusOK, toolResponse{
+		writeJSON(w, http.StatusOK, core.ToolEnvelope{
 			OK: true,
-			Meta: toolResponseMeta{
+			Meta: core.ToolMeta{
 				RunID:        runID,
 				ToolCallID:   tc.ToolCallID,
 				EvidenceHash: tc.EvidenceHash,
@@ -441,7 +623,7 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: toolName,
 		IdemKey:  &idemKey,
@@ -463,6 +645,7 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	toolLogger := s.logger.With(
+		"request_id", RequestIDFromContext(r.Context()),
 		"run_id", runID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", toolName,
@@ -490,9 +673,9 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK: ghErr == nil,
-		Meta: toolResponseMeta{
+		Meta: core.ToolMeta{
 			RunID:        runID,
 			ToolCallID:   tc.ToolCallID,
 			EvidenceHash: tc.EvidenceHash,
@@ -587,6 +770,7 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 		if replayed {
 			out[i] = batchResultJSON{Index: i, Issue: &replayIssue, Replayed: true}
 			s.logger.Info("tool call replayed",
+				"request_id", RequestIDFromContext(r.Context()),
 				"run_id", runID,
 				"tool_call_id", tc.ToolCallID,
 				"tool_name", "github.issues.batch_create",
@@ -604,7 +788,7 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+		tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 			RunID:    runID,
 			ToolName: "github.issues.batch_create",
 			IdemKey:  &idemKey,
@@ -626,6 +810,7 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 		}
 
 		s.logger.Info("tool call completed",
+			"request_id", RequestIDFromContext(r.Context()),
 			"run_id", runID,
 			"tool_call_id", tc.ToolCallID,
 			"tool_name", "github.issues.batch_create",
@@ -660,9 +845,9 @@ func (s *Server) handleBatchCreateIssues(w http.ResponseWriter, r *http.Request)
 
 	status := core.DeriveBatchStatus(len(body.Issues), replayedCount, errCount)
 
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK: errCount == 0,
-		Meta: toolResponseMeta{
+		Meta: core.ToolMeta{
 			RunID:        runID,
 			ToolCallID:   "",
 			EvidenceHash: "",
@@ -725,9 +910,9 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if replayed {
-		writeJSON(w, http.StatusOK, toolResponse{
+		writeJSON(w, http.StatusOK, core.ToolEnvelope{
 			OK:     true,
-			Meta:   toolResponseMeta{RunID: runID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false},
+			Meta:   core.ToolMeta{RunID: runID, ToolCallID: tcReplay.ToolCallID, EvidenceHash: tcReplay.EvidenceHash, DryRun: false},
 			Result: replay,
 		})
 		return
@@ -740,7 +925,7 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 		comment, ghErr = s.gh.CreatePRComment(r.Context(), owner, repo, prNumber, body.Body)
 	}
 
-	tc, auditErr := s.audit.Record(r.Context(), core.RecordInput{
+	tc, _, auditErr := s.audit.Record(r.Context(), core.RecordInput{
 		RunID:    runID,
 		ToolName: toolName,
 		IdemKey:  &idemKey,
@@ -757,6 +942,7 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("tool call completed",
+		"request_id", RequestIDFromContext(r.Context()),
 		"run_id", runID,
 		"tool_call_id", tc.ToolCallID,
 		"tool_name", toolName,
@@ -774,9 +960,9 @@ func (s *Server) handleCreatePRComment(w http.ResponseWriter, r *http.Request) {
 	if body.DryRun {
 		result = map[string]any{"would_comment": map[string]any{"repo": run.Repo, "pr_number": prNumber, "body": body.Body}}
 	}
-	writeJSON(w, http.StatusOK, toolResponse{
+	writeJSON(w, http.StatusOK, core.ToolEnvelope{
 		OK:     true,
-		Meta:   toolResponseMeta{RunID: runID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: body.DryRun},
+		Meta:   core.ToolMeta{RunID: runID, ToolCallID: tc.ToolCallID, EvidenceHash: tc.EvidenceHash, DryRun: body.DryRun},
 		Result: result,
 	})
 }
@@ -836,10 +1022,17 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 
 func withLogging(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := uuid.New().String()
+		ctx := context.WithValue(r.Context(), ctxKeyRequestID, requestID)
+		r = r.WithContext(ctx)
+
+		w.Header().Set("X-Request-ID", requestID)
+
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(sw, r)
 		logger.Info("http request",
+			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,

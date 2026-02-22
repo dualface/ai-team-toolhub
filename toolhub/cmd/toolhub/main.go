@@ -87,6 +87,12 @@ func main() {
 		}
 		qaMaxOutputBytes = bytes
 	}
+	qaMaxConcurrency := 0
+	if raw := strings.TrimSpace(os.Getenv("QA_MAX_CONCURRENCY")); raw != "" {
+		if concurrency, parseErr := strconv.Atoi(raw); parseErr == nil && concurrency > 0 {
+			qaMaxConcurrency = concurrency
+		}
+	}
 	qaAllowedExecutables := []string{"go", "make", "pytest", "python", "python3", "npm", "npx", "yarn", "pnpm", "ruff", "eslint", "golangci-lint"}
 	if raw := strings.TrimSpace(os.Getenv("QA_ALLOWED_EXECUTABLES")); raw != "" {
 		qaAllowedExecutables = splitCSV(raw)
@@ -95,14 +101,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	qaRunner := qa.NewRunner(qa.Config{
+	qaRunner, err := qa.NewRunner(qa.Config{
 		WorkDir:            envOrDefault("QA_WORKDIR", "."),
 		TestCmd:            envOrDefault("QA_TEST_CMD", "go -C toolhub test ./..."),
 		LintCmd:            envOrDefault("QA_LINT_CMD", "go -C toolhub test ./..."),
 		Timeout:            qaTimeout,
 		MaxOutputBytes:     qaMaxOutputBytes,
+		MaxConcurrency:     qaMaxConcurrency,
 		AllowedExecutables: qaAllowedExecutables,
 	})
+	if err != nil {
+		logger.Error("qa runner init failed", "err", err)
+		os.Exit(1)
+	}
 
 	httpAddr := envOrDefault("TOOLHUB_HTTP_LISTEN", "0.0.0.0:8080")
 	mcpAddr := envOrDefault("TOOLHUB_MCP_LISTEN", "0.0.0.0:8090")

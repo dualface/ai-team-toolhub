@@ -86,6 +86,109 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/tool-calls:
+    get:
+      summary: List tool calls for run
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tool calls for the run
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ToolCall'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/artifacts:
+    get:
+      summary: List artifacts for run
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifacts for the run
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Artifact'
+        '404':
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/artifacts/{artifactID}:
+    get:
+      summary: Get artifact metadata by run and id
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: artifactID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifact metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artifact'
+        '404':
+          description: Run or artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/runs/{runID}/artifacts/{artifactID}/content:
+    get:
+      summary: Stream artifact content by run and id
+      parameters:
+        - in: path
+          name: runID
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: artifactID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Artifact content stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Run or artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/runs/{runID}/issues:
     post:
       summary: Create issue (or dry run)
@@ -285,7 +388,9 @@ paths:
                   type: boolean
       responses:
         '200':
-          description: Tool response envelope
+          description: >
+            Tool response envelope. The result field contains a QAResult
+            with status (pass|fail|timeout|error|dry_run) and report.
           content:
             application/json:
               schema:
@@ -316,7 +421,9 @@ paths:
                   type: boolean
       responses:
         '200':
-          description: Tool response envelope
+          description: >
+            Tool response envelope. The result field contains a QAResult
+            with status (pass|fail|timeout|error|dry_run) and report.
           content:
             application/json:
               schema:
@@ -341,6 +448,53 @@ components:
         created_at:
           type: string
           format: date-time
+    Artifact:
+      type: object
+      properties:
+        artifact_id:
+          type: string
+        run_id:
+          type: string
+        name:
+          type: string
+        uri:
+          type: string
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        content_type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    ToolCall:
+      type: object
+      properties:
+        tool_call_id:
+          type: string
+        run_id:
+          type: string
+        tool_name:
+          type: string
+        idempotency_key:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [ok, fail]
+        request_artifact_id:
+          type: string
+          nullable: true
+        response_artifact_id:
+          type: string
+          nullable: true
+        evidence_hash:
+          type: string
+        created_at:
+          type: string
+          format: date-time
     ToolMeta:
       type: object
       properties:
@@ -352,10 +506,19 @@ components:
           type: string
         dry_run:
           type: boolean
+        qa_artifacts:
+          $ref: '#/components/schemas/QAArtifacts'
     ToolEnvelope:
+      description: >
+        Response envelope for all tool calls.
+        The `ok` field indicates binary success/failure (stored in DB as ok/fail).
+        For batch operations, `result.status` may be `ok|fail|partial`;
+        partial is derived at response time when some batch items succeed
+        and others fail. This differs from the DB-level binary status.
       type: object
       properties:
         ok:
+          description: Binary success indicator. true = ok, false = fail.
           type: boolean
         meta:
           $ref: '#/components/schemas/ToolMeta'
@@ -363,6 +526,58 @@ components:
           type: object
           additionalProperties: true
     Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    QAReport:
+      type: object
+      properties:
+        command:
+          type: string
+        work_dir:
+          type: string
+        exit_code:
+          type: integer
+        duration_ms:
+          type: integer
+        stdout:
+          type: string
+        stderr:
+          type: string
+        stdout_truncated:
+          type: boolean
+        stderr_truncated:
+          type: boolean
+        output_limit_bytes:
+          type: integer
+    QAResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pass, fail, timeout, error, dry_run]
+          description: >
+            QA execution outcome.
+            pass: command succeeded (exit code 0).
+            fail: command ran but exited non-zero.
+            timeout: command exceeded configured timeout.
+            error: pre-execution failure (invalid command, workdir, etc.).
+            dry_run: dry-run mode, command was not executed.
+        report:
+          $ref: '#/components/schemas/QAReport'
+    QAArtifacts:
+      type: object
+      properties:
+        stdout_artifact_id:
+          type: string
+        stderr_artifact_id:
+          type: string
+        report_artifact_id:
+          type: string
+    ToolError:
       type: object
       properties:
         code:
