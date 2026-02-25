@@ -1089,8 +1089,8 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 			testStatus := qa.DeriveStatus(testReport, testErr, false)
 			lintStatus := qa.DeriveStatus(lintReport, lintErr, false)
 
-			telemetry.IncRepairQAResult("test", mapQAStatusToMetric(testStatus))
-			telemetry.IncRepairQAResult("lint", mapQAStatusToMetric(lintStatus))
+			telemetry.IncRepairQAResult("test", core.MapQAStatusToMetric(testStatus))
+			telemetry.IncRepairQAResult("lint", core.MapQAStatusToMetric(lintStatus))
 
 			lastTestErr = testErr
 			lastLintErr = lintErr
@@ -1126,7 +1126,7 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		if !qaPassed {
 			result["status"] = "failed"
 			result["qa_failure_reason"] = fmt.Sprintf("qa checks failed after %d iteration(s)", iterationsRun)
-			category := deriveQAFailureCategory(lastTestErr, lastLintErr, &lastTestReport, &lastLintReport)
+			category := core.DeriveQAFailureCategory(lastTestErr, lastLintErr, &lastTestReport, &lastLintReport)
 			result["qa_failure_category"] = category
 
 			rollback, rollbackErr := s.code.RollbackBranch(ctx, args.BaseBranch, args.HeadBranch, false)
@@ -1545,45 +1545,6 @@ func splitRepo(fullRepo string) (string, string) {
 		return fullRepo, ""
 	}
 	return parts[0], parts[1]
-}
-
-func mapQAStatusToMetric(status qa.Status) string {
-	switch status {
-	case qa.StatusPass:
-		return "pass"
-	case qa.StatusFail:
-		return "fail"
-	case qa.StatusTimeout:
-		return "timeout"
-	default:
-		return "error"
-	}
-}
-
-func deriveQAFailureCategory(testErr, lintErr error, testReport, lintReport *qa.Report) string {
-	if testErr != nil && lintErr != nil {
-		return "both_failure"
-	}
-	if testErr != nil {
-		var qaErr *qa.QAError
-		if (errors.As(testErr, &qaErr) && qaErr.ErrCode == qa.ErrCodeTimeout) || strings.Contains(strings.ToLower(testErr.Error()), "timeout") {
-			return "qa_timeout"
-		}
-		return "test_failure"
-	}
-	if lintErr != nil {
-		return "lint_failure"
-	}
-
-	if testReport != nil && lintReport != nil {
-		testStatus := qa.DeriveStatus(*testReport, nil, false)
-		lintStatus := qa.DeriveStatus(*lintReport, nil, false)
-		if testStatus != qa.StatusPass || lintStatus != qa.StatusPass {
-			return "qa_error"
-		}
-	}
-
-	return "qa_error"
 }
 
 func mcpContent(text string) map[string]any {
