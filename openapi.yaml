@@ -9,6 +9,7 @@ paths:
   /healthz:
     get:
       summary: Health check
+      operationId: healthCheck
       responses:
         '200':
           description: OK
@@ -22,6 +23,7 @@ paths:
   /metrics:
     get:
       summary: Prometheus metrics
+      operationId: getMetrics
       responses:
         '200':
           description: Metrics in Prometheus text format
@@ -32,6 +34,7 @@ paths:
   /version:
     get:
       summary: Build metadata
+      operationId: getVersion
       responses:
         '200':
           description: Version info
@@ -51,6 +54,7 @@ paths:
   /api/v1/runs:
     post:
       summary: Create run
+      operationId: createRun
       requestBody:
         required: true
         content:
@@ -79,6 +83,7 @@ paths:
   /api/v1/runs/{runID}:
     get:
       summary: Get run
+      operationId: getRun
       parameters:
         - in: path
           name: runID
@@ -107,6 +112,7 @@ paths:
   /api/v1/runs/{runID}/approvals:
     post:
       summary: Create manual approval request
+      operationId: createApproval
       parameters:
         - in: path
           name: runID
@@ -145,6 +151,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     get:
       summary: List approvals for run
+      operationId: listApprovals
       parameters:
         - in: path
           name: runID
@@ -169,6 +176,7 @@ paths:
   /api/v1/runs/{runID}/approvals/{approvalID}:
     get:
       summary: Get approval by run and id
+      operationId: getApproval
       parameters:
         - in: path
           name: runID
@@ -196,6 +204,7 @@ paths:
   /api/v1/runs/{runID}/approvals/{approvalID}/approve:
     post:
       summary: Approve pending approval request
+      operationId: approveApproval
       parameters:
         - in: path
           name: runID
@@ -239,6 +248,7 @@ paths:
   /api/v1/runs/{runID}/approvals/{approvalID}/reject:
     post:
       summary: Reject pending approval request
+      operationId: rejectApproval
       parameters:
         - in: path
           name: runID
@@ -282,6 +292,7 @@ paths:
   /api/v1/runs/{runID}/code/patch:
     post:
       summary: Generate unified patch/diff artifact without modifying repository
+      operationId: generateCodePatch
       parameters:
         - in: path
           name: runID
@@ -326,6 +337,7 @@ paths:
   /api/v1/runs/{runID}/code/branch-pr:
     post:
       summary: Create branch, commit file changes, push branch, and open PR
+      operationId: createCodeBranchPR
       parameters:
         - in: path
           name: runID
@@ -387,7 +399,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ToolEnvelope'
+                $ref: '#/components/schemas/ToolEnvelopePolicyViolation'
         '404':
           description: Run or approval not found
           content:
@@ -397,6 +409,7 @@ paths:
   /api/v1/runs/{runID}/code/repair-loop:
     post:
       summary: Run controlled repair loop with QA retries and rollback on failure
+      operationId: runCodeRepairLoop
       parameters:
         - in: path
           name: runID
@@ -451,7 +464,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ToolEnvelope'
+                $ref: '#/components/schemas/ToolEnvelopeRepairLoopResult'
         '400':
           description: Invalid request
           content:
@@ -466,7 +479,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ToolEnvelope'
+                $ref: '#/components/schemas/ToolEnvelopePolicyViolation'
         '404':
           description: Run or approval not found
           content:
@@ -476,6 +489,7 @@ paths:
   /api/v1/runs/{runID}/tool-calls:
     get:
       summary: List tool calls for run
+      operationId: listToolCalls
       parameters:
         - in: path
           name: runID
@@ -500,6 +514,7 @@ paths:
   /api/v1/runs/{runID}/artifacts:
     get:
       summary: List artifacts for run
+      operationId: listArtifacts
       parameters:
         - in: path
           name: runID
@@ -524,6 +539,7 @@ paths:
   /api/v1/runs/{runID}/artifacts/{artifactID}:
     get:
       summary: Get artifact metadata by run and id
+      operationId: getArtifact
       parameters:
         - in: path
           name: runID
@@ -551,6 +567,7 @@ paths:
   /api/v1/runs/{runID}/artifacts/{artifactID}/content:
     get:
       summary: Stream artifact content by run and id
+      operationId: getArtifactContent
       parameters:
         - in: path
           name: runID
@@ -579,6 +596,7 @@ paths:
   /api/v1/runs/{runID}/issues:
     post:
       summary: Create issue (or dry run)
+      operationId: createIssue
       parameters:
         - in: path
           name: runID
@@ -632,6 +650,7 @@ paths:
   /api/v1/runs/{runID}/issues/batch:
     post:
       summary: Batch create issues (or dry run)
+      operationId: batchCreateIssues
       parameters:
         - in: path
           name: runID
@@ -678,6 +697,7 @@ paths:
   /api/v1/runs/{runID}/prs/{prNumber}/comment:
     post:
       summary: Create PR summary comment (or dry run)
+      operationId: createPRComment
       parameters:
         - in: path
           name: runID
@@ -734,6 +754,7 @@ paths:
   /api/v1/runs/{runID}/prs/{prNumber}:
     get:
       summary: Get pull request metadata
+      operationId: getPR
       parameters:
         - in: path
           name: runID
@@ -761,6 +782,7 @@ paths:
   /api/v1/runs/{runID}/prs/{prNumber}/files:
     get:
       summary: List pull request files
+      operationId: listPRFiles
       parameters:
         - in: path
           name: runID
@@ -788,6 +810,7 @@ paths:
   /api/v1/runs/{runID}/qa/test:
     post:
       summary: Execute configured QA test command
+      operationId: runQATest
       parameters:
         - in: path
           name: runID
@@ -823,6 +846,7 @@ paths:
   /api/v1/runs/{runID}/qa/lint:
     post:
       summary: Execute configured QA lint command
+      operationId: runQALint
       parameters:
         - in: path
           name: runID
@@ -974,6 +998,22 @@ components:
           additionalProperties: true
         error:
           $ref: '#/components/schemas/ToolError'
+    ToolEnvelopePolicyViolation:
+      allOf:
+        - $ref: '#/components/schemas/ToolEnvelope'
+        - type: object
+          properties:
+            error:
+              oneOf:
+                - $ref: '#/components/schemas/ToolError'
+                - $ref: '#/components/schemas/PolicyViolation'
+    ToolEnvelopeRepairLoopResult:
+      allOf:
+        - $ref: '#/components/schemas/ToolEnvelope'
+        - type: object
+          properties:
+            result:
+              $ref: '#/components/schemas/RepairLoopResult'
     Error:
       type: object
       properties:
