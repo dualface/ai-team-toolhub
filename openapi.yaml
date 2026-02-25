@@ -426,7 +426,11 @@ paths:
                 max_iterations:
                   type: integer
                   minimum: 1
-                  maximum: 3
+                  maximum: 10
+                  description: >
+                    Requested repair-loop iterations. Server enforces an
+                    environment-configured cap (`REPAIR_MAX_ITERATIONS`),
+                    defaulted by `TOOLHUB_PROFILE`.
                 dry_run:
                   type: boolean
                 files:

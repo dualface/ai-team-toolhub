@@ -22,16 +22,17 @@ import (
 )
 
 type Server struct {
-	runs   *core.RunService
-	audit  *core.AuditService
-	policy *core.Policy
-	gh     *gh.Client
-	srv    *http.Server
-	logger *slog.Logger
-	mode   core.BatchMode
-	build  BuildInfo
-	qa     *qa.Runner
-	code   *codeops.Runner
+	runs                *core.RunService
+	audit               *core.AuditService
+	policy              *core.Policy
+	gh                  *gh.Client
+	srv                 *http.Server
+	logger              *slog.Logger
+	mode                core.BatchMode
+	build               BuildInfo
+	qa                  *qa.Runner
+	code                *codeops.Runner
+	repairMaxIterations int
 }
 
 type BuildInfo struct {
@@ -57,17 +58,21 @@ func RequestIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode, build BuildInfo) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode, repairMaxIterations int, build BuildInfo) *Server {
+	if repairMaxIterations <= 0 {
+		repairMaxIterations = 3
+	}
 	s := &Server{
-		runs:   runs,
-		audit:  audit,
-		policy: policy,
-		gh:     ghClient,
-		qa:     qaRunner,
-		code:   codeRunner,
-		logger: logger,
-		mode:   mode,
-		build:  build,
+		runs:                runs,
+		audit:               audit,
+		policy:              policy,
+		gh:                  ghClient,
+		qa:                  qaRunner,
+		code:                codeRunner,
+		logger:              logger,
+		mode:                mode,
+		build:               build,
+		repairMaxIterations: repairMaxIterations,
 	}
 
 	mux := http.NewServeMux()
@@ -740,10 +745,10 @@ func (s *Server) handleCodeRepairLoop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.MaxIterations <= 0 {
-		body.MaxIterations = 1
+		body.MaxIterations = s.repairMaxIterations
 	}
-	if body.MaxIterations > 3 {
-		writeErr(w, http.StatusBadRequest, "max_iterations cannot exceed 3")
+	if body.MaxIterations > s.repairMaxIterations {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("max_iterations cannot exceed %d", s.repairMaxIterations))
 		return
 	}
 	if strings.TrimSpace(body.ApprovalID) == "" {

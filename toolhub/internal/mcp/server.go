@@ -27,32 +27,37 @@ type ctxKey string
 const ctxKeyTraceID ctxKey = "trace_id"
 
 type Server struct {
-	runs   *core.RunService
-	audit  *core.AuditService
-	policy *core.Policy
-	gh     *gh.Client
-	qa     *qa.Runner
-	code   *codeops.Runner
-	addr   string
-	logger *slog.Logger
-	mode   core.BatchMode
+	runs                *core.RunService
+	audit               *core.AuditService
+	policy              *core.Policy
+	gh                  *gh.Client
+	qa                  *qa.Runner
+	code                *codeops.Runner
+	addr                string
+	logger              *slog.Logger
+	mode                core.BatchMode
+	repairMaxIterations int
 
 	ln     net.Listener
 	mu     sync.Mutex
 	closed bool
 }
 
-func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode) *Server {
+func NewServer(addr string, runs *core.RunService, audit *core.AuditService, policy *core.Policy, ghClient *gh.Client, qaRunner *qa.Runner, codeRunner *codeops.Runner, logger *slog.Logger, mode core.BatchMode, repairMaxIterations int) *Server {
+	if repairMaxIterations <= 0 {
+		repairMaxIterations = 3
+	}
 	return &Server{
-		runs:   runs,
-		audit:  audit,
-		policy: policy,
-		gh:     ghClient,
-		qa:     qaRunner,
-		code:   codeRunner,
-		addr:   addr,
-		logger: logger,
-		mode:   mode,
+		runs:                runs,
+		audit:               audit,
+		policy:              policy,
+		gh:                  ghClient,
+		qa:                  qaRunner,
+		code:                codeRunner,
+		addr:                addr,
+		logger:              logger,
+		mode:                mode,
+		repairMaxIterations: repairMaxIterations,
 	}
 }
 
@@ -981,10 +986,10 @@ func (s *Server) toolCodeRepairLoop(ctx context.Context, raw json.RawMessage, ba
 		return base
 	}
 	if args.MaxIterations <= 0 {
-		args.MaxIterations = 1
+		args.MaxIterations = s.repairMaxIterations
 	}
-	if args.MaxIterations > 3 {
-		base.Error = &rpcError{Code: -32602, Message: "max_iterations cannot exceed 3"}
+	if args.MaxIterations > s.repairMaxIterations {
+		base.Error = &rpcError{Code: -32602, Message: fmt.Sprintf("max_iterations cannot exceed %d", s.repairMaxIterations)}
 		return base
 	}
 

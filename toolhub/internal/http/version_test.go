@@ -13,7 +13,7 @@ import (
 
 func TestVersionEndpointReturnsDefaults(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	s := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, logger, core.BatchModePartial, BuildInfo{})
+	s := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, logger, core.BatchModePartial, 3, BuildInfo{})
 
 	req := httptest.NewRequest(http.MethodGet, "/version", nil)
 	rr := httptest.NewRecorder()
@@ -41,7 +41,7 @@ func TestVersionEndpointReturnsDefaults(t *testing.T) {
 
 func TestVersionEndpointReturnsInjectedValues(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	s := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, logger, core.BatchModePartial, BuildInfo{
+	s := NewServer("127.0.0.1:0", nil, nil, nil, nil, nil, nil, logger, core.BatchModePartial, 3, BuildInfo{
 		Version:   "1.2.3",
 		GitCommit: "abc123",
 		BuildTime: "2026-02-21T12:00:00Z",

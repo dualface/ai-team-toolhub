@@ -15,8 +15,7 @@ type ProfileDefaults struct {
 	BatchMode                   string
 
 	// RepairMaxIterations is the default max iterations for repair loops.
-	// NOTE: not yet wired — currently hardcoded to max 3 in HTTP/MCP handlers.
-	// Included here for documentation and future use.
+	// Explicit REPAIR_MAX_ITERATIONS env var (if set) overrides this default.
 	RepairMaxIterations int
 }
 

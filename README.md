@@ -144,12 +144,13 @@ It runs:
 
 Key env vars:
 
-- `TOOLHUB_PROFILE` — environment profile (`dev`, `staging`, `prod`); sets defaults for policy, QA timeout, batch mode
+- `TOOLHUB_PROFILE` — environment profile (`dev`, `staging`, `prod`); sets defaults for policy, QA timeout, repair loop cap, batch mode
 - `REPO_ALLOWLIST`
 - `TOOL_ALLOWLIST`
 - `PATH_POLICY_FORBIDDEN_PREFIXES`, `PATH_POLICY_APPROVAL_PREFIXES`
 - `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `GITHUB_PRIVATE_KEY_PATH`
 - `QA_WORKDIR`, `QA_TEST_CMD`, `QA_LINT_CMD`, `QA_TIMEOUT_SECONDS`
+- `REPAIR_MAX_ITERATIONS` (optional override, range `1..10`; profile default applies when unset)
 - `QA_MAX_OUTPUT_BYTES`, `QA_ALLOWED_EXECUTABLES`, `QA_MAX_CONCURRENCY`
 - `QA_BACKEND`, `QA_SANDBOX_IMAGE`, `QA_SANDBOX_DOCKER_BIN`, `QA_SANDBOX_CONTAINER_WORKDIR`
 - `CODE_WORKDIR`, `CODE_GIT_REMOTE`

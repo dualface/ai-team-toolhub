@@ -91,6 +91,19 @@ func main() {
 		qaTimeoutSecs = secs
 	}
 	qaTimeout := time.Duration(qaTimeoutSecs) * time.Second
+	repairMaxIterations := profile.RepairMaxIterations
+	if raw := strings.TrimSpace(os.Getenv("REPAIR_MAX_ITERATIONS")); raw != "" {
+		v, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || v < 1 || v > 10 {
+			logger.Error("invalid REPAIR_MAX_ITERATIONS", "value", raw, "allowed_range", "1..10")
+			os.Exit(1)
+		}
+		repairMaxIterations = v
+	}
+	if repairMaxIterations < 1 || repairMaxIterations > 10 {
+		logger.Error("invalid repair max iterations from profile", "value", repairMaxIterations, "allowed_range", "1..10")
+		os.Exit(1)
+	}
 	qaMaxOutputBytes := 256 * 1024
 	if raw := strings.TrimSpace(os.Getenv("QA_MAX_OUTPUT_BYTES")); raw != "" {
 		bytes, parseErr := strconv.Atoi(raw)
@@ -154,16 +167,17 @@ func main() {
 		"path_policy_forbidden_prefixes", forbiddenPrefixes,
 		"path_policy_approval_prefixes", approvalPrefixes,
 		"qa_timeout_seconds", qaTimeoutSecs,
+		"repair_max_iterations", repairMaxIterations,
 		"batch_mode", string(batchMode),
 	)
 
-	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, httpsvr.BuildInfo{
+	httpServer := httpsvr.NewServer(httpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, repairMaxIterations, httpsvr.BuildInfo{
 		Version:         version,
 		GitCommit:       gitCommit,
 		BuildTime:       buildTime,
 		ContractVersion: core.ContractVersion,
 	})
-	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode)
+	mcpServer := mcpsvr.NewServer(mcpAddr, runService, auditService, policy, ghClient, qaRunner, codeRunner, logger, batchMode, repairMaxIterations)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- httpServer.ListenAndServe() }()
