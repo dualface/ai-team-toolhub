@@ -196,6 +196,10 @@ func (a *AuditService) ListToolCallsByRun(ctx context.Context, runID string) ([]
 	return a.db.ListToolCallsByRun(ctx, runID)
 }
 
+func (a *AuditService) ListToolCallsByRunFiltered(ctx context.Context, runID string, filter db.ToolCallListFilter) ([]*db.ToolCall, error) {
+	return a.db.ListToolCallsByRunFiltered(ctx, runID, filter)
+}
+
 // ListArtifactsByRun returns all artifacts associated with a run.
 func (a *AuditService) ListArtifactsByRun(ctx context.Context, runID string) ([]*db.Artifact, error) {
 	return a.store.ListByRun(ctx, runID)

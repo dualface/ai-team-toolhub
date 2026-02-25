@@ -75,6 +75,11 @@ curl -s http://localhost:${TOOLHUB_HTTP_PORT}/version
 
 See full schema in `openapi.yaml`.
 
+Tool-calls query filters:
+
+- `GET /api/v1/runs/{runID}/tool-calls` supports optional query params:
+  `status` (`ok|fail`), `tool_name`, `created_after` (RFC3339), `created_before` (RFC3339)
+
 Idempotency notes:
 
 - `POST /api/v1/runs/{runID}/issues` and `POST /api/v1/runs/{runID}/prs/{prNumber}/comment`

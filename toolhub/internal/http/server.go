@@ -346,12 +346,52 @@ func (s *Server) handleListToolCalls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	toolCalls, err := s.audit.ListToolCallsByRun(r.Context(), runID)
+	filters, err := parseToolCallListFilters(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	toolCalls, err := s.audit.ListToolCallsByRunFiltered(r.Context(), runID, filters)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, toolCalls)
+}
+
+func parseToolCallListFilters(r *http.Request) (db.ToolCallListFilter, error) {
+	q := r.URL.Query()
+	filter := db.ToolCallListFilter{
+		Status:   strings.TrimSpace(q.Get("status")),
+		ToolName: strings.TrimSpace(q.Get("tool_name")),
+	}
+
+	if filter.Status != "" && filter.Status != "ok" && filter.Status != "fail" {
+		return db.ToolCallListFilter{}, fmt.Errorf("status must be one of: ok, fail")
+	}
+
+	if rawAfter := strings.TrimSpace(q.Get("created_after")); rawAfter != "" {
+		v, err := time.Parse(time.RFC3339, rawAfter)
+		if err != nil {
+			return db.ToolCallListFilter{}, fmt.Errorf("created_after must be RFC3339")
+		}
+		filter.CreatedAfter = &v
+	}
+
+	if rawBefore := strings.TrimSpace(q.Get("created_before")); rawBefore != "" {
+		v, err := time.Parse(time.RFC3339, rawBefore)
+		if err != nil {
+			return db.ToolCallListFilter{}, fmt.Errorf("created_before must be RFC3339")
+		}
+		filter.CreatedBefore = &v
+	}
+
+	if filter.CreatedAfter != nil && filter.CreatedBefore != nil && filter.CreatedAfter.After(*filter.CreatedBefore) {
+		return db.ToolCallListFilter{}, fmt.Errorf("created_after must be earlier than or equal to created_before")
+	}
+
+	return filter, nil
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {

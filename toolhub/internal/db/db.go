@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -200,6 +201,13 @@ type ToolCall struct {
 	CreatedAt          time.Time `json:"created_at"`
 }
 
+type ToolCallListFilter struct {
+	Status        string
+	ToolName      string
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+}
+
 // InsertToolCall creates a new tool call record.
 func (d *DB) InsertToolCall(ctx context.Context, tc *ToolCall) error {
 	_, err := d.conn.ExecContext(ctx,
@@ -234,9 +242,41 @@ func (d *DB) GetSuccessfulToolCallByIdempotency(ctx context.Context, runID, tool
 
 // ListToolCallsByRun returns all tool calls for a given run.
 func (d *DB) ListToolCallsByRun(ctx context.Context, runID string) ([]*ToolCall, error) {
+	return d.ListToolCallsByRunFiltered(ctx, runID, ToolCallListFilter{})
+}
+
+// ListToolCallsByRunFiltered returns tool calls for a run with optional filters.
+func (d *DB) ListToolCallsByRunFiltered(ctx context.Context, runID string, filter ToolCallListFilter) ([]*ToolCall, error) {
+	query := `SELECT tool_call_id, run_id, tool_name, idempotency_key, status, request_artifact_id, response_artifact_id, evidence_hash, created_at
+		 FROM tool_calls WHERE run_id = $1`
+	args := []any{runID}
+	nextArg := 2
+
+	if strings.TrimSpace(filter.Status) != "" {
+		query += fmt.Sprintf(" AND status = $%d", nextArg)
+		args = append(args, filter.Status)
+		nextArg++
+	}
+	if strings.TrimSpace(filter.ToolName) != "" {
+		query += fmt.Sprintf(" AND tool_name = $%d", nextArg)
+		args = append(args, filter.ToolName)
+		nextArg++
+	}
+	if filter.CreatedAfter != nil {
+		query += fmt.Sprintf(" AND created_at >= $%d", nextArg)
+		args = append(args, filter.CreatedAfter.UTC())
+		nextArg++
+	}
+	if filter.CreatedBefore != nil {
+		query += fmt.Sprintf(" AND created_at <= $%d", nextArg)
+		args = append(args, filter.CreatedBefore.UTC())
+		nextArg++
+	}
+	query += " ORDER BY created_at"
+
 	rows, err := d.conn.QueryContext(ctx,
-		`SELECT tool_call_id, run_id, tool_name, idempotency_key, status, request_artifact_id, response_artifact_id, evidence_hash, created_at
-		 FROM tool_calls WHERE run_id = $1 ORDER BY created_at`, runID,
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list tool_calls: %w", err)

@@ -158,6 +158,33 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: status
+          required: false
+          schema:
+            type: string
+            enum: [ok, fail]
+          description: Optional status filter.
+        - in: query
+          name: tool_name
+          required: false
+          schema:
+            type: string
+          description: Optional exact tool name filter.
+        - in: query
+          name: created_after
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Optional inclusive lower bound for created_at (RFC3339).
+        - in: query
+          name: created_before
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: Optional inclusive upper bound for created_at (RFC3339).
       responses:
         '200':
           description: Approval list
